@@ -1,0 +1,37 @@
+# Include README and LICENSE
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+
+# Include requirements files
+include requirements.txt
+include requirements-dev.txt
+include requirements-test.txt
+
+# Include configuration files
+include pyproject.toml
+include setup.py
+include .pre-commit-config.yaml
+
+# Include scripts
+recursive-include scripts *.py
+
+# Exclude tests from distribution
+exclude tests/*
+recursive-exclude tests *
+
+# Exclude development files
+exclude .github/*
+recursive-exclude .github *
+
+# Exclude user data
+global-exclude *.pyc
+global-exclude __pycache__/*
+global-exclude .DS_Store
+global-exclude .env
+
+# Exclude outputs and data
+recursive-exclude outputs *
+recursive-exclude data *
+recursive-exclude training_history *

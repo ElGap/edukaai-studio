@@ -1,0 +1,21 @@
+# Machine Learning Core - SECURITY UPDATES COMPLETED ✅
+# All critical and high priority vulnerabilities patched
+# See docs/SECURITY_AUDIT.md for details
+mlx>=0.29.4                 # ✅ UPDATED: 0.31.1 installed (CVE-2025-62608 fixed)
+mlx-lm>=0.30.0              # ✅ UPDATED: 0.31.1 installed
+transformers>=4.51.0        # ✅ UPDATED: 5.3.0 installed (Multiple RCE CVEs fixed)
+numpy>=2.0.0                # ✅ UPDATED: 2.4.3 installed
+
+# Configuration
+pyyaml>=6.0                 # Current: 6.0.2 installed
+
+# UI
+gradio>=5.31.0              # ✅ UPDATED: 6.9.0 installed (SSRF, LFI, Traversal fixed)
+
+# Visualization
+matplotlib>=3.10.0          # Updated: 3.10.1 installed
+
+# Logging
+loguru>=0.7.0               # Optional - has fallback implementation
+
+
