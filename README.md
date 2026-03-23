@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Apple%20Silicon-orange.svg)](https://www.apple.com/mac/)
 [![MLX](https://img.shields.io/badge/MLX-Framework-red.svg)](https://ml-explore.github.io/mlx/)
 
-**EdukaAI Fine Tuning Studio** is a user-friendly desktop application for fine-tuning Large Language Models (LLMs) using LoRA on Apple Silicon Macs. Built with Apple's MLX framework, it provides an intuitive web interface for the complete fine-tuning workflow — from data upload to model deployment.
+**EdukaAI Studio** is a web application for fine-tuning Large Language Models (LLMs) using LoRA on Apple Silicon Macs. Built with Apple's MLX framework and Gradio, it runs in your browser and provides an intuitive interface for the complete fine-tuning workflow — from data upload to model export and testing.
 
 <p align="center">
   <img src="screenshot.png" alt="EdukaAI Studio Interface" width="800"/>
@@ -21,7 +21,10 @@
 - **📤 Upload**: Support for Alpaca, ShareGPT, and custom JSONL formats
 - **⚙️ Configure**: Visual parameter tuning with smart presets
 - **🎯 Train**: Real-time monitoring with interactive loss curves  
-- **📦 Results**: Export to adapters, fused models, or GGUF format
+- **📦 Results**: Export trained models in multiple formats:
+  - **Adapters** (LoRA safetensors)
+  - **Fused Models** (Full merged weights)
+  - **GGUF** (For Ollama, llama.cpp, and other inference engines)
 - **💬 Test**: Built-in chat interface for immediate evaluation
 
 ### 📊 Real-Time Training Dashboard
