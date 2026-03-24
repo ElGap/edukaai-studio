@@ -9,13 +9,13 @@
 
 EdukaAI Studio is a user-friendly application for fine-tuning Large Language Models (LLMs) on your Apple Silicon Mac. Built on Apple's [MLX framework](https://github.com/ml-explore/mlx), it provides a simple 5-step wizard to train custom AI models - no coding required!
 
-**Perfect for:**
-- 🎓 Students learning about AI/ML
-- 🏢 Professionals customizing models for specific domains
-- 🔬 Researchers experimenting with fine-tuning
-- 💡 Hobbyists exploring LLM capabilities
-
 ![EdukaAI Studio Overview](/EdukaAi-studio.png)
+
+**Perfect for:**
+- Students learning about AI/ML
+- Professionals customizing models for specific domains
+- Researchers experimenting with fine-tuning
+- Hobbyists exploring LLM capabilities
 
 ## 🚀 Quick Start (5 Minutes)
 
@@ -36,11 +36,11 @@ bash install-edukai.sh
 ```
 
 That's it! The installer will:
-- ✅ Check your Mac compatibility (Apple Silicon required)
-- ✅ Download EdukaAI Studio automatically
-- ✅ Install Python dependencies
-- ✅ Set up everything in `~/Applications/EdukaAI-Studio/`
-- ✅ Create a Desktop shortcut
+- Check your Mac compatibility (Apple Silicon required)
+- Download EdukaAI Studio automatically
+- Install Python dependencies
+- Set up everything in `~/Applications/EdukaAI-Studio/`
+- Create a Desktop shortcut
 
 ### Launch the Application
 
