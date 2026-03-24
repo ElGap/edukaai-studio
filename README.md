@@ -76,7 +76,7 @@ Answer: A neural network works by processing information through interconnected 
 {"instruction": "Summarize this article", "input": "The quick brown fox...", "output": "A fox jumped over a lazy dog."}
 ```
 
-Alternatively, you can generate training samples interactively using [EdukaAI Dataset Manager](https://github.com/elgap/edukaai-dataset-manager), a locally-hosted tool with 100% privacy that provides a chat-like interface for creating structured training data—then simply export for EdukaAI Studio and fine-tune in minutes.
+Alternatively, you can generate training samples interactively using [EdukaAI Dataset Manager](https://github.com/elgap/edukaai), a locally-hosted tool with 100% privacy that provides a chat-like interface for creating structured training data—then simply export for EdukaAI Studio and fine-tune in minutes.
 
 Save as `my-training-data.jsonl` (100-1000 examples recommended)
 
@@ -102,7 +102,7 @@ After training completes:
 - Export your model as:
   - **LoRA Adapter** (~10-50MB) - Use with base model
   - **Fused Model** - Standalone complete model
-  - **GGUF** - For llama.cpp and local inference
+  - **GGUF** - For llama.cpp and local inference (soon)
 
 ---
 
@@ -152,7 +152,6 @@ Create a tutor for a specific language by training on dialogues and lessons.
 
 ## 🆘 Getting Help
 
-**Documentation:** [Full docs in repository](https://github.com/elgap/edukaai-studio#readme)
 
 **Report Issues:** [GitHub Issues](https://github.com/elgap/edukaai-studio/issues)
 
@@ -386,24 +385,6 @@ Create a clickable macOS app:
 ## 🤝 Contributing
 
 We welcome contributions! Contributing guide will be added soon.
-
-
-## 📸 Screenshots
-
-![Dataset Upload](docs/screenshots/datasets.png)
-*Upload and validate training datasets with automatic format detection*
-
-![Configure Training](docs/screenshots/configure.png)
-*Select models, presets, and customize training parameters*
-
-![Training Monitor](docs/screenshots/training.png)
-*Real-time training logs and loss curves via WebSocket*
-
-![Summary](docs/screenshots/summary.png)
-*Detailed results with checkpoint management*
-
-![Dual Chat](docs/screenshots/chat.png)
-*Compare base vs fine-tuned models side-by-side*
 
 ## 📄 License
 

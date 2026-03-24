@@ -1,0 +1,62 @@
+# Build artifacts
+build/
+*.tar.gz
+*.zip
+*.app/
+*.command
+install-edukai.sh
+install.log
+
+# Backend
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/**/*.pyd
+backend/.Python
+backend/*.so
+backend/*.egg
+backend/*.egg-info/
+backend/dist/
+backend/build/
+backend/.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+backend/.tox/
+backend/.env
+backend/.env.local
+backend/venv/
+backend/ENV/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+frontend/.env
+frontend/.env.local
+
+# Storage (data files - don't commit large files)
+backend/storage/datasets/*
+!backend/storage/datasets/.gitkeep
+backend/storage/runs/*
+!backend/storage/runs/.gitkeep
+backend/storage/db/*.db
+backend/storage/db/*.db-journal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+
+docs
