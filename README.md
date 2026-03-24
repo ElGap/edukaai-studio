@@ -76,7 +76,7 @@ Answer: A neural network works by processing information through interconnected 
 {"instruction": "Summarize this article", "input": "The quick brown fox...", "output": "A fox jumped over a lazy dog."}
 ```
 
-Alternatively, you can generate training samples interactively using [EdukaAI Dataset Manager](https://github.com/elgap/edukaai), a locally-hosted tool with 100% privacy that provides a chat-like interface for creating structured training data—then simply export for EdukaAI Studio and fine-tune in minutes.
+Alternatively, you can generate training samples interactively using [EdukaAI Curator](https://github.com/elgap/edukaai-curator), a locally-hosted dataset manager with 100% privacy that provides a chat-like interface for creating structured training data—then simply export for EdukaAI Studio and fine-tune in minutes.
 
 Save as `my-training-data.jsonl` (100-1000 examples recommended)
 
