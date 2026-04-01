@@ -5,9 +5,20 @@ import router from './router'
 
 import './assets/main.css'
 
-const app = createApp(App)
+console.log('[Main] Starting application...')
 
-app.use(createPinia())
-app.use(router)
+try {
+  const app = createApp(App)
+  console.log('[Main] App created')
 
-app.mount('#app')
+  app.use(createPinia())
+  console.log('[Main] Pinia initialized')
+
+  app.use(router)
+  console.log('[Main] Router initialized')
+
+  app.mount('#app')
+  console.log('[Main] App mounted successfully')
+} catch (error) {
+  console.error('[Main] Error starting application:', error)
+}

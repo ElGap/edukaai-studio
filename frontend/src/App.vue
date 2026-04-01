@@ -9,7 +9,8 @@
         <div class="flex h-16 items-center justify-between">
           <!-- Logo -->
           <div class="flex items-center gap-3">
-            <span class="font-semibold text-lg">EdukaAI Studio</span>
+            <span class="font-semibold text-xl">EdukaAI Studio</span>
+            <span class="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded">BETA</span>
           </div>
           
           <!-- Navigation Steps -->
@@ -17,7 +18,7 @@
             <router-link
               v-for="(step, index) in steps"
               :key="step.name"
-              :to="{ name: step.name }"
+              :to="getStepRoute(step)"
               :class="[
                 'px-4 py-2 rounded-md text-sm font-medium transition-colors',
                 isStepActive(step.name)
@@ -64,7 +65,7 @@
         <router-link
           v-for="(step, index) in steps"
           :key="step.name"
-          :to="{ name: step.name }"
+          :to="getStepRoute(step)"
           :class="[
             'flex-shrink-0 px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors',
             isStepActive(step.name)
@@ -132,6 +133,12 @@ const isStepEnabled = (step: number) => {
   if (step === 4) return !!store.completedRun
   if (step === 5) return !!store.completedRun
   return false
+}
+
+const getStepRoute = (step: typeof steps[0]) => {
+  // Always return a valid route object
+  // The router guards will handle validation and redirects
+  return { name: step.name }
 }
 </script>
 

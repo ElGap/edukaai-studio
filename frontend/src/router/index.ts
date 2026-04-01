@@ -15,54 +15,130 @@ const router = createRouter({
       name: 'configure',
       component: () => import('@/views/ConfigureTrainingView.vue'),
       meta: { step: 2, title: 'Configure Training' },
-      beforeEnter: (_to, _from, next) => {
+      beforeEnter: async (to, _from, next) => {
         const store = useTrainingStore()
-        if (!store.selectedDatasetId) {
-          next({ name: 'datasets' })
-        } else {
+        const datasetId = to.query.datasetId as string
+        
+        // Restore from URL if present
+        if (datasetId) {
+          store.setSelectedDataset(datasetId)
           next()
+        } else if (store.selectedDatasetId) {
+          // Has state but no URL param - redirect with param
+          next({ name: 'configure', query: { datasetId: store.selectedDatasetId } })
+        } else {
+          // No dataset selected
+          next({ name: 'datasets' })
         }
       }
     },
     {
-      path: '/training',
+      path: '/training/:runId?',
       name: 'training',
       component: () => import('@/views/TrainingView.vue'),
       meta: { step: 3, title: 'Training' },
-      beforeEnter: (_to, _from, next) => {
+      beforeEnter: async (to, _from, next) => {
         const store = useTrainingStore()
-        if (!store.activeRunId) {
+        const runId = to.params.runId as string
+        
+        // If no runId in URL, check store
+        if (!runId) {
+          if (store.activeRunId) {
+            // Redirect to URL with runId
+            next({ name: 'training', params: { runId: store.activeRunId } })
+            return
+          }
+          // No active run - must configure first
           next({ name: 'configure' })
-        } else {
+          return
+        }
+        
+        // Fetch run from DB to verify it exists and get status
+        try {
+          const run = await store.fetchCompletedRun(runId)
+          if (!run) {
+            next({ name: 'datasets' })
+            return
+          }
+          
+          // Set active run for the view
+          store.setActiveRun(runId)
+          
+          // If already completed, redirect to summary
+          if (run.status === 'completed') {
+            next({ name: 'summary', params: { runId } })
+            return
+          }
+          
           next()
+        } catch {
+          next({ name: 'datasets' })
         }
       }
     },
     {
-      path: '/summary',
+      path: '/summary/:runId?',
       name: 'summary',
       component: () => import('@/views/SummaryView.vue'),
       meta: { step: 4, title: 'Training Summary' },
-      beforeEnter: (_to, _from, next) => {
+      beforeEnter: async (to, _from, next) => {
         const store = useTrainingStore()
-        if (!store.completedRun) {
+        const runId = to.params.runId as string
+        
+        // If no runId in URL, check store
+        if (!runId) {
+          if (store.completedRun) {
+            next({ name: 'summary', params: { runId: store.completedRun.id } })
+            return
+          }
           next({ name: 'training' })
-        } else {
+          return
+        }
+        
+        try {
+          const run = await store.fetchCompletedRun(runId)
+          if (!run || run.status !== 'completed') {
+            next({ name: 'training', params: { runId } })
+            return
+          }
+          
+          store.setCompletedRun(run)
           next()
+        } catch {
+          next({ name: 'datasets' })
         }
       }
     },
     {
-      path: '/chat',
+      path: '/chat/:runId?',
       name: 'chat',
       component: () => import('@/views/DualChatView.vue'),
       meta: { step: 5, title: 'Dual Chat' },
-      beforeEnter: (_to, _from, next) => {
+      beforeEnter: async (to, _from, next) => {
         const store = useTrainingStore()
-        if (!store.completedRun) {
+        const runId = to.params.runId as string
+        
+        // If no runId in URL, check store
+        if (!runId) {
+          if (store.completedRun) {
+            next({ name: 'chat', params: { runId: store.completedRun.id } })
+            return
+          }
           next({ name: 'summary' })
-        } else {
+          return
+        }
+        
+        try {
+          const run = await store.fetchCompletedRun(runId)
+          if (!run || run.status !== 'completed') {
+            next({ name: 'summary', params: { runId } })
+            return
+          }
+          
+          store.setCompletedRun(run)
           next()
+        } catch {
+          next({ name: 'datasets' })
         }
       }
     },
@@ -77,147 +153,61 @@ const router = createRouter({
 
 // Navigation guard for step progression
 router.beforeEach((to, from, next) => {
-  const store = useTrainingStore()
-  const toStep = to.meta.step as number | null
-  const fromStep = from.meta.step as number | null
-  
-  console.log(`Router guard: ${String(from.name)} -> ${String(to.name)}, steps: ${fromStep} -> ${toStep}`)
-  console.log(`Store state: selectedDatasetId=${store.selectedDatasetId}, activeRunId=${store.activeRunId}, completedRun=${store.completedRun?.id}`)
-  
-  // Allow navigation to Models page at any time
-  if (to.name === 'models') {
-    next()
-    return
-  }
-  
-  // STATUS CHECK: If trying to go to training page (step 3)
-  if (toStep === 3) {
-    // Check if we have a completed run - don't allow restarting from training page
-    if (store.completedRun) {
-      const completedStatus = store.completedRun.status
-      if (completedStatus === 'completed') {
-        console.log('BLOCKED: Training already completed. Must start new training from datasets page.')
-        next({ name: 'datasets' })
-        return
-      }
-    }
+  try {
+    const store = useTrainingStore()
+    const toStep = to.meta.step as number | null
+    const fromStep = from.meta.step as number | null
     
-    // Check active run status
-    const activeRun = store.activeRun
-    if (activeRun) {
-      // If training is running or paused, allow viewing
-      if (activeRun.status === 'running' || activeRun.status === 'paused') {
-        console.log('ALLOWED: Training is active, showing training page')
-        next()
-        return
-      }
-      
-      // If training failed, allow retry but show warning
-      if (activeRun.status === 'failed') {
-        console.log('ALLOWED: Previous training failed, allowing retry')
-        next()
-        return
-      }
-      
-      // If training was stopped by user, allow restart
-      if (activeRun.status === 'stopped') {
-        console.log('ALLOWED: Training was stopped, allowing restart')
-        next()
-        return
-      }
-      
-      // If training is completed, redirect to summary
-      if (activeRun.status === 'completed') {
-        console.log('REDIRECT: Training completed, going to summary')
-        next({ name: 'summary' })
-        return
-      }
-    }
+    console.log(`[Router] Navigating: ${String(from.name)} -> ${String(to.name)}, steps: ${fromStep} -> ${toStep}`)
     
-    // No active run and no completed run - must configure first
-    if (!store.activeRunId && fromStep !== 2) {
-      console.log('BLOCKED: No active training run, go to configure first')
-      next({ name: 'configure' })
-      return
-    }
-  }
-  
-  // STATUS CHECK: If trying to go to summary page (step 4)
-  if (toStep === 4) {
-    // Must have completed run
-    if (!store.completedRun) {
-      // Check if we have an active run that completed
-      const activeRun = store.activeRun
-      if (!activeRun || activeRun.status !== 'completed') {
-        console.log('BLOCKED: No completed training run available')
-        next({ name: 'training' })
-        return
-      }
-    }
-  }
-  
-  // STATUS CHECK: If trying to go to chat page (step 5)
-  if (toStep === 5) {
-    // Must have completed run with fine-tuned model
-    if (!store.completedRun) {
-      console.log('BLOCKED: No completed run for chat')
-      next({ name: 'summary' })
+    // Allow initial load and navigation to Models page at any time
+    if (to.name === 'models') {
+      next()
       return
     }
     
-    // Verify the completed run actually succeeded
-    if (store.completedRun.status !== 'completed') {
-      console.log('BLOCKED: Training did not complete successfully')
-      next({ name: 'summary' })
+    // Allow navigation to datasets (step 1) always
+    if (toStep === 1) {
+      next()
       return
     }
-  }
-  
-  // Allow backward navigation
-  if (toStep === null || fromStep === null || (toStep as number) < fromStep) {
-    console.log('Allowing backward navigation')
-    next()
-    return
-  }
-  
-  // Check if user can proceed to this step
-  if (toStep === 2 && !store.selectedDatasetId) {
-    console.log('Blocking: No dataset selected')
-    next({ name: 'datasets' })
-    return
-  }
-  
-  if (toStep === 3 && !store.activeRunId) {
-    console.log('Blocking: No active run')
-    // Allow if we just completed training and are viewing summary/chat
-    // But don't allow going back to training without starting new
-    if (fromStep === 4 && store.completedRun) {
-      console.log('Blocking: Training already completed, start new from datasets')
+    
+    // Allow backward navigation without restrictions
+    if (toStep === null || fromStep === null || (toStep as number) <= fromStep) {
+      next()
+      return
+    }
+    
+    // Forward navigation checks
+    if (toStep === 2 && !store.selectedDatasetId) {
+      console.log('[Router] Blocking: No dataset selected')
       next({ name: 'datasets' })
       return
     }
-    // Only allow if coming from configure (step 2) where we just started training
-    if (fromStep !== 2) {
+    
+    if (toStep === 3 && !store.activeRunId) {
+      console.log('[Router] Blocking: No active run')
       next({ name: 'configure' })
       return
     }
-    console.log('Allowing navigation to training from configure even without activeRunId (training just started)')
+    
+    if (toStep === 4 && !store.completedRun) {
+      console.log('[Router] Blocking: No completed run')
+      next({ name: 'training' })
+      return
+    }
+    
+    if (toStep === 5 && !store.completedRun) {
+      console.log('[Router] Blocking: No completed run for chat')
+      next({ name: 'summary' })
+      return
+    }
+    
+    next()
+  } catch (error) {
+    console.error('[Router] Error in navigation guard:', error)
+    next({ name: 'datasets' })
   }
-  
-  if (toStep === 4 && !store.completedRun) {
-    console.log('Blocking: No completed run')
-    next({ name: 'training' })
-    return
-  }
-  
-  if (toStep === 5 && !store.completedRun) {
-    console.log('Blocking: No completed run for chat')
-    next({ name: 'summary' })
-    return
-  }
-  
-  console.log('Navigation allowed')
-  next()
 })
 
 export default router

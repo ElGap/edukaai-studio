@@ -130,7 +130,7 @@ export interface TrainingMetric {
 }
 
 export const useTrainingStore = defineStore('training', () => {
-  // State
+  // State - all UI state is memory-only (no localStorage for security)
   const datasets = ref<Dataset[]>([])
   const baseModels = ref<BaseModel[]>([])
   const presets = ref<TrainingPreset[]>([])
@@ -138,40 +138,23 @@ export const useTrainingStore = defineStore('training', () => {
   
   const selectedDatasetId = ref<string | null>(null)
   const selectedValidationDatasetId = ref<string | null>(null)
-  const activeRunId = ref<string | null>(localStorage.getItem('edukai_active_run_id'))
+  const activeRunId = ref<string | null>(null)
   const completedRun = ref<TrainingRun | null>(null)
-  const validationSplitPercent = ref<number>(10)  // 5, 10, or 15 - stored when uploading dataset
-  const trainingMetrics = ref<TrainingMetric[]>([])  // Accumulated metrics during training
+  const validationSplitPercent = ref<number>(10)
+  const trainingMetrics = ref<TrainingMetric[]>([])
   
-  // Load persisted training runs on init
-  const savedRuns = localStorage.getItem('edukai_training_runs')
-  if (savedRuns) {
-    try {
-      trainingRuns.value = JSON.parse(savedRuns)
-    } catch (e) {
-      console.error('Failed to parse saved training runs:', e)
-    }
-  }
-  
-  // Persist active run ID changes
+  // No localStorage persistence for active run - security focused
   const setActiveRun = (id: string | null) => {
     activeRunId.value = id
-    if (id) {
-      localStorage.setItem('edukai_active_run_id', id)
-    } else {
-      localStorage.removeItem('edukai_active_run_id')
-    }
   }
   
-  // Persist training runs changes
+  // Training runs fetched from database - no localStorage needed
   const addTrainingRun = (run: TrainingRun) => {
     trainingRuns.value.push(run)
-    localStorage.setItem('edukai_training_runs', JSON.stringify(trainingRuns.value))
   }
   
   const setTrainingRuns = (runs: TrainingRun[]) => {
     trainingRuns.value = runs
-    localStorage.setItem('edukai_training_runs', JSON.stringify(runs))
   }
   
   // Getters
@@ -244,11 +227,9 @@ export const useTrainingStore = defineStore('training', () => {
     selectedValidationDatasetId.value = null
     activeRunId.value = null
     completedRun.value = null
-    validationSplitPercent.value = 10  // Reset to default
-    trainingMetrics.value = []  // Clear metrics
-    // Also clear localStorage
-    localStorage.removeItem('edukai_active_run_id')
-    localStorage.removeItem('edukai_training_runs')
+    validationSplitPercent.value = 10
+    trainingMetrics.value = []
+    // No localStorage to clear - all state is memory-only
   }
   
   return {
