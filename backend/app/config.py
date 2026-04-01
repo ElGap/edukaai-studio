@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     max_context_length: int = 4096
     max_concurrent_runs: int = 1
     
+    # Model Cache Directory (persistent across reinstalls)
+    # Default: ~/.edukaai/models
+    model_cache_dir: str = str(Path.home() / ".edukaai" / "models")
+    
+    # Training Output Directory (for runs, adapters, exports)
+    # Default: ./storage/runs (relative to app) or ~/.edukaai/runs (persistent)
+    training_output_dir: str = str(Path.home() / ".edukaai" / "training")
+    
     class Config:
         env_prefix = "EDUKAAI_"
         case_sensitive = False
@@ -155,7 +163,10 @@ def get_config() -> Config:
 # Ensure storage directories exist
 def ensure_directories():
     """Create necessary directories if they don't exist."""
-    dirs = [
+    settings = get_settings()
+    
+    # App storage directories
+    app_dirs = [
         "./storage/app/logs",
         "./storage/app/temp",
         "./storage/app/cache",
@@ -163,8 +174,36 @@ def ensure_directories():
         "./storage/runs",
     ]
     
-    for dir_path in dirs:
+    for dir_path in app_dirs:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
+    
+    # Persistent model cache directory (survives reinstalls)
+    model_cache_dir = Path(settings.model_cache_dir)
+    model_cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Persistent training output directory (survives reinstalls)
+    training_output_dir = Path(settings.training_output_dir)
+    training_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create subdirectories for training outputs
+    (training_output_dir / "runs").mkdir(exist_ok=True)
+    (training_output_dir / "exports").mkdir(exist_ok=True)
+
+
+def get_model_cache_dir() -> Path:
+    """Get the directory for cached models (persistent across reinstalls)."""
+    settings = get_settings()
+    cache_dir = Path(settings.model_cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def get_training_output_dir() -> Path:
+    """Get the directory for training outputs (persistent across reinstalls)."""
+    settings = get_settings()
+    output_dir = Path(settings.training_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 # Initialize on module load

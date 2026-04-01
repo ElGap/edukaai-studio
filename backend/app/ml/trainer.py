@@ -34,6 +34,9 @@ import re
 # Logging
 logger = get_logger(__name__)
 
+# Import config for persistent paths
+from ..config import get_model_cache_dir
+
 # Custom dataset loader for Alpaca format
 def load_alpaca_dataset(data_dir: str, tokenizer, max_seq_length: int = 2048):
     """Load Alpaca format dataset and convert to mlx_lm compatible format."""
@@ -446,29 +449,100 @@ class TrainingProcess:
         
         logger.info(f"TrainingProcess initialized for run {run_id}")
     
+    def _validate_cached_model(self, download_dir: Path, expected_model_id: str) -> bool:
+        """Validate that cached model matches the expected model ID.
+        
+        Args:
+            download_dir: Path to the downloaded model directory
+            expected_model_id: The HuggingFace model ID we expect
+            
+        Returns:
+            True if model is valid and matches expected ID, False otherwise
+        """
+        try:
+            config_file = download_dir / "config.json"
+            if not config_file.exists():
+                logger.warning(f"[VALIDATION] No config.json found in {download_dir}")
+                return False
+            
+            # Read the config to get the model identifier
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            
+            # Get model identifier from config
+            config_model_id = config.get('_name_or_path', '')
+            model_type = config.get('model_type', 'unknown')
+            
+            logger.info(f"[VALIDATION] Cached model config: _name_or_path='{config_model_id}', model_type='{model_type}'")
+            logger.info(f"[VALIDATION] Expected model ID: '{expected_model_id}'")
+            
+            # Validate by checking if expected model ID is in the config
+            # Handle various formats: mlx-community/Llama-3.2-1B, meta-llama/Llama-3.2-1B, etc.
+            expected_name = expected_model_id.split('/')[-1] if '/' in expected_model_id else expected_model_id
+            
+            if config_model_id and expected_model_id in config_model_id:
+                logger.info(f"[VALIDATION] ✓ Model matches expected ID")
+                return True
+            elif config_model_id and expected_name in config_model_id:
+                logger.info(f"[VALIDATION] ✓ Model name '{expected_name}' found in config")
+                return True
+            elif config_model_id == expected_model_id:
+                logger.info(f"[VALIDATION] ✓ Exact match")
+                return True
+            else:
+                logger.warning(f"[VALIDATION] ✗ MISMATCH DETECTED!")
+                logger.warning(f"[VALIDATION]   Expected: {expected_model_id}")
+                logger.warning(f"[VALIDATION]   Found in cache: {config_model_id}")
+                logger.warning(f"[VALIDATION]   Will clear cache and re-download")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[VALIDATION] Error validating cached model: {e}")
+            return False
+
     def _check_model_cached(self, model_id: str) -> bool:
         """Check if model is already cached locally with all required files.
         
         Checks in order:
         1. Our custom download directory (storage/runs/downloaded_models/)
         2. HuggingFace cache directory
+        
+        Includes validation to ensure cached model matches expected model_id.
         """
         from pathlib import Path
         
-        # First check our custom download directory
+        logger.info(f"[CACHE CHECK] Looking for model: {model_id}")
+        
+        # First check our custom download directory (now persistent via EDUKAAI_MODEL_CACHE_DIR)
         try:
-            download_dir = Path(self.config.output_path).parent / "downloaded_models" / model_id.replace("/", "--")
+            cache_base_dir = get_model_cache_dir()
+            download_dir = cache_base_dir / model_id.replace("/", "--")
+            logger.info(f"[CACHE CHECK] Checking custom directory: {download_dir}")
+            logger.info(f"[CACHE CHECK] Cache base directory: {cache_base_dir}")
+            
             if download_dir.exists():
                 config_file = download_dir / "config.json"
                 safetensors_files = list(download_dir.glob("model*.safetensors"))
                 
                 if config_file.exists() and safetensors_files:
-                    logger.info(f"Model {model_id} found in custom download directory: {download_dir}")
-                    return True
+                    logger.info(f"[CACHE CHECK] Found files in custom directory: {len(safetensors_files)} safetensors files")
+                    
+                    # VALIDATE the cached model
+                    if self._validate_cached_model(download_dir, model_id):
+                        logger.info(f"[CACHE CHECK] ✓ Model {model_id} validated and ready to use")
+                        return True
+                    else:
+                        # Model doesn't match - clear it
+                        logger.warning(f"[CACHE CHECK] Cached model doesn't match {model_id}, clearing...")
+                        import shutil
+                        shutil.rmtree(download_dir)
+                        logger.info(f"[CACHE CHECK] Cleared mismatched cache directory")
                 else:
-                    logger.info(f"Custom download directory exists but missing required files: {download_dir}")
+                    logger.info(f"[CACHE CHECK] Directory exists but missing files: config={config_file.exists()}, weights={len(safetensors_files)}")
+            else:
+                logger.info(f"[CACHE CHECK] Custom download directory does not exist")
         except Exception as e:
-            logger.debug(f"Error checking custom download directory: {e}")
+            logger.error(f"[CACHE CHECK] Error checking custom download directory: {e}")
         
         # Then check HuggingFace cache directory
         try:
@@ -476,37 +550,36 @@ class TrainingProcess:
             model_name = model_id.replace("/", "--")
             model_cache_path = cache_dir / f"models--{model_name}"
             
-            logger.info(f"Checking HF model cache at: {model_cache_path}")
+            logger.info(f"[CACHE CHECK] Checking HF cache at: {model_cache_path}")
             
             if not model_cache_path.exists():
-                logger.info(f"Model cache directory does not exist: {model_cache_path}")
+                logger.info(f"[CACHE CHECK] HF cache directory does not exist")
                 return False
             
             snapshots_dir = model_cache_path / "snapshots"
             if not snapshots_dir.exists() or not any(snapshots_dir.iterdir()):
-                logger.info(f"Snapshots directory does not exist or is empty")
+                logger.info(f"[CACHE CHECK] HF snapshots directory empty")
                 return False
             
             # Check if config.json exists in any snapshot
             for snapshot in snapshots_dir.iterdir():
                 if snapshot.is_dir():
                     config_file = snapshot / "config.json"
-                    # Check for any safetensors file (model*.safetensors or weights*.safetensors)
                     safetensors_files = list(snapshot.glob("*.safetensors"))
                     
                     if config_file.exists() and safetensors_files:
-                        logger.info(f"Model {model_id} found in HF cache at {snapshot}")
+                        logger.info(f"[CACHE CHECK] Found valid HF cache at {snapshot}")
                         return True
                     elif config_file.exists():
-                        logger.warning(f"Snapshot {snapshot} has config.json but missing model weights")
+                        logger.warning(f"[CACHE CHECK] HF snapshot missing weights: {snapshot}")
                     elif safetensors_files:
-                        logger.warning(f"Snapshot {snapshot} has model weights but missing config.json")
+                        logger.warning(f"[CACHE CHECK] HF snapshot missing config: {snapshot}")
             
-            logger.info(f"Model {model_id} not fully cached - missing required files")
+            logger.info(f"[CACHE CHECK] No valid HF cache found")
             return False
             
         except Exception as e:
-            logger.error(f"Error checking model cache: {e}")
+            logger.error(f"[CACHE CHECK] Error checking HF cache: {e}")
             return False
     
     def _update_status(self, status: str, message: str = ""):
@@ -610,14 +683,18 @@ class TrainingProcess:
                 self._update_status("stopped", "Download stopped by user")
                 return False
             
-            # Check if model already exists in our custom download directory
-            download_dir = Path(self.config.output_path).parent / "downloaded_models" / model_id.replace("/", "--")
+            # Check if model already exists in our persistent cache directory
+            cache_base_dir = get_model_cache_dir()
+            download_dir = cache_base_dir / model_id.replace("/", "--")
+            logger.info(f"[DOWNLOAD] Using persistent cache directory: {cache_base_dir}")
+            
             if download_dir.exists():
                 config_file = download_dir / "config.json"
                 safetensors_files = list(download_dir.glob("model*.safetensors"))
                 
                 if config_file.exists() and safetensors_files:
                     logger.info(f"[SKIP DOWNLOAD] Model already exists in {download_dir}")
+                    logger.info(f"[SKIP DOWNLOAD] This cache survives app reinstalls!")
                     self._update_status("downloading", f"Using cached model from {download_dir}")
                     return True
             
@@ -638,11 +715,13 @@ class TrainingProcess:
             logger.info(f"[DOWNLOAD START] Model: {model_id}")
             self._update_status("downloading", f"Starting download of {model_id}...")
             
-            # Create a specific download directory for this model in our storage
-            download_dir = Path(self.config.output_path).parent / "downloaded_models" / model_id.replace("/", "--")
+            # Use persistent cache directory (survives app reinstalls)
+            cache_base_dir = get_model_cache_dir()
+            download_dir = cache_base_dir / model_id.replace("/", "--")
             download_dir.mkdir(parents=True, exist_ok=True)
             
             logger.info(f"[DOWNLOAD DIR] {download_dir}")
+            logger.info(f"[DOWNLOAD DIR] Persistent cache location (survives reinstalls)")
             
             # Use HfFileSystem to list files in the repo
             fs = HfFileSystem()
@@ -850,43 +929,80 @@ class TrainingProcess:
             # Apply resource limits
             self._apply_resource_limits()
             
-            logger.info(f"Starting training run {self.run_id}")
-            logger.info(f"Model: {self.config.model_id}")
-            logger.info(f"Steps: {self.config.steps}")
-            logger.info(f"Data path: {self.config.data_path}")
+            logger.info("=" * 70)
+            logger.info(f"[TRAINING START] Run ID: {self.run_id}")
+            logger.info(f"[TRAINING CONFIG] Requested Model: {self.config.model_id}")
+            logger.info(f"[TRAINING CONFIG] Steps: {self.config.steps}")
+            logger.info(f"[TRAINING CONFIG] Data path: {self.config.data_path}")
+            logger.info(f"[TRAINING CONFIG] Output path: {self.config.output_path}")
+            logger.info("=" * 70)
+            
+            # Determine model path with detailed logging
+            # Use persistent cache directory (survives app reinstalls)
+            cache_base_dir = get_model_cache_dir()
+            download_dir = cache_base_dir / self.config.model_id.replace("/", "--")
+            logger.info(f"[MODEL RESOLUTION] Expected model: {self.config.model_id}")
+            logger.info(f"[MODEL RESOLUTION] Cache base dir: {cache_base_dir}")
+            logger.info(f"[MODEL RESOLUTION] Model specific dir: {download_dir}")
+            logger.info(f"[MODEL RESOLUTION] Note: Cache survives app reinstalls")
             
             # Check if model needs to be downloaded
             # First check our custom download directory
-            download_dir = Path(self.config.output_path).parent / "downloaded_models" / self.config.model_id.replace("/", "--")
             if download_dir.exists() and any(download_dir.glob("model*.safetensors")):
-                # Use downloaded model
-                self.model_path = str(download_dir)
-                logger.info(f"Using previously downloaded model at: {self.model_path}")
+                # Use downloaded model - but VALIDATE first
+                logger.info(f"[MODEL RESOLUTION] Found files in custom directory, validating...")
+                if self._validate_cached_model(download_dir, self.config.model_id):
+                    self.model_path = str(download_dir)
+                    logger.info(f"[MODEL RESOLUTION] ✓ Using validated cached model at: {self.model_path}")
+                else:
+                    logger.warning(f"[MODEL RESOLUTION] ✗ Cached model validation failed, will re-download")
+                    import shutil
+                    shutil.rmtree(download_dir)
+                    logger.info(f"[MODEL RESOLUTION] Cleared invalid cache, downloading...")
+                    download_success = self._download_model(self.config.model_id)
+                    if not download_success:
+                        raise FileNotFoundError(f"Failed to download model {self.config.model_id}")
+                    self.model_path = str(download_dir)
+                    logger.info(f"[MODEL RESOLUTION] Using freshly downloaded model at: {self.model_path}")
             elif self._check_model_cached(self.config.model_id):
                 # Model exists in HF cache, use HF ID
                 self.model_path = self.config.model_id
-                logger.info(f"Using cached model from HuggingFace: {self.model_path}")
+                logger.info(f"[MODEL RESOLUTION] Using HuggingFace cache for: {self.model_path}")
             else:
                 # Model not found anywhere, download it
-                logger.info(f"Model {self.config.model_id} not found, downloading...")
+                logger.info(f"[MODEL RESOLUTION] Model {self.config.model_id} not found, downloading...")
                 download_success = self._download_model(self.config.model_id)
                 if not download_success:
                     raise FileNotFoundError(f"Failed to download model {self.config.model_id}")
                 # Use downloaded model path
                 self.model_path = str(download_dir)
-                logger.info(f"Using downloaded model at: {self.model_path}")
+                logger.info(f"[MODEL RESOLUTION] Using downloaded model at: {self.model_path}")
+            
+            # Log final model path before loading
+            logger.info("=" * 70)
+            logger.info(f"[MODEL LOADING] Final model_path: {self.model_path}")
+            logger.info(f"[MODEL LOADING] Config model_id: {self.config.model_id}")
+            logger.info("=" * 70)
             
             # Load model
-            logger.info("Loading model...")
-            self._update_status("loading_model", "Loading model into memory...")
+            logger.info("[MODEL LOADING] Loading model into memory...")
+            self._update_status("loading_model", f"Loading {self.config.model_id} into memory...")
             self.model, self.tokenizer = load(
                 self.model_path,
                 tokenizer_config={"trust_remote_code": True}
             )
             
-            # Model loaded successfully
+            # Model loaded successfully - verify by checking config
+            logger.info("[MODEL LOADING] ✓ Model loaded successfully")
             self._update_status("model_loaded", "Model loaded successfully")
-            logger.info(f"Model {self.config.model_id} loaded successfully")
+            
+            # Additional verification - log model info if available
+            if hasattr(self.model, 'config'):
+                model_config = self.model.config
+                loaded_model_type = getattr(model_config, 'model_type', 'unknown')
+                loaded_vocab_size = getattr(model_config, 'vocab_size', 'unknown')
+                logger.info(f"[MODEL VERIFICATION] Loaded model type: {loaded_model_type}")
+                logger.info(f"[MODEL VERIFICATION] Vocab size: {loaded_vocab_size}")
             
             # Create adapter output directory
             adapter_path = Path(self.config.output_path)

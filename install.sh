@@ -168,27 +168,21 @@ check_git() {
 # ============================================================================
 
 setup_installation_directory() {
-    # Get the directory where the script was invoked from
-    local invoke_dir="$(pwd)"
-    
     if [ "$MODE" = "user" ]; then
         echo ""
         echo "Setting up installation directory..."
         
-        # Install in current directory (where user ran the command)
-        INSTALL_DIR="${invoke_dir}/edukaai-studio"
+        # Install in current directory (where user created the directory)
+        INSTALL_DIR="$(pwd)"
         
-        if [ -d "$INSTALL_DIR" ]; then
-            echo "   Existing installation found at: $INSTALL_DIR"
-            echo "   Updating..."
-            rm -rf "$INSTALL_DIR"
+        # Check if directory is not empty
+        if [ "$(ls -A)" ]; then
+            echo "   Warning: Current directory is not empty"
+            echo "   Installing in: $INSTALL_DIR"
+            echo ""
         fi
         
-        mkdir -p "$INSTALL_DIR"
-        cd "$INSTALL_DIR"
-        
         # Download repository
-        echo ""
         echo "Downloading EdukaAI Studio..."
         echo "   Installing to: $INSTALL_DIR"
         git clone --depth 1 "$REPO_URL.git" . 2>&1 | grep -v "Receiving objects" || true
@@ -355,7 +349,7 @@ main() {
         echo "   - EdukaAI Studio application"
         echo "   - Required AI/ML libraries"
         echo ""
-        echo "Installation location: $(pwd)/edukaai-studio"
+        echo "Installation location: $(pwd)"
         echo ""
         
         if [ "$AUTO_YES" = false ]; then

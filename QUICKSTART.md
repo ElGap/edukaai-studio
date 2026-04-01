@@ -3,16 +3,18 @@
 ## 🚀 Installation (One Command)
 
 ```bash
+mkdir edukaai-studio
+cd edukaai-studio
 curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/install.sh | bash
 ```
 
 **After installation:**
 - Double-click "EdukaAI-Studio.command" on your Desktop
-- Or run: `cd edukaai-studio && ./launch.sh`
+- Or run: `./launch.sh`
 
 Then open browser: **http://localhost:3030**
 
-**Note:** App is installed in `./edukaai-studio/` (current directory)
+**Note:** App is installed in the `edukaai-studio/` directory you created
 
 ---
 
@@ -98,7 +100,7 @@ Typical times:
 ### "Can't connect to localhost:3030"
 **Solution:** 
 ```bash
-cd edukaai-studio && ./launch.sh
+./launch.sh
 ```
 
 ### "Installation failed"

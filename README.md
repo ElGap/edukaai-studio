@@ -21,20 +21,24 @@ EdukaAI Studio is a user-friendly application for fine-tuning Large Language Mod
 
 ### Installation
 
-**One-line install** (recommended for most users):
+**Recommended install**:
 ```bash
+mkdir edukaai-studio
+cd edukaai-studio
 curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/install.sh | bash
 ```
 
 **Non-interactive install** (for automation/CI):
 ```bash
+mkdir edukaai-studio
+cd edukaai-studio
 curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/install.sh | bash -s -- --yes
 ```
 
 The installer will:
 - Check your Mac compatibility (Apple Silicon required)
 - Install Python 3.10+ and Node.js 18+ (if missing)
-- Download EdukaAI Studio to `./edukaai-studio/` (current directory)
+- Download EdukaAI Studio to the current directory
 - Install all dependencies
 - Create a Desktop shortcut
 
@@ -44,12 +48,12 @@ After installation:
 ```bash
 # Option 1: Double-click 'EdukaAI-Studio.command' on your Desktop
 # Option 2: Run from the install directory:
-cd edukaai-studio && ./launch.sh
+./launch.sh
 ```
 
 Then open your browser: **http://localhost:3030**
 
-**Note:** The application is installed in the directory where you ran the install command, under `./edukaai-studio/`.
+**Note:** The application is installed in the directory where you ran the install command (e.g., `edukaai-studio/`).
 
 ### For Developers
 
@@ -68,7 +72,7 @@ cd edukaai-studio
 ```
 
 The installer automatically detects when running from a git repository and:
-- Installs in the current directory (does not create subdirectory)
+- Installs in the current directory
 - Skips Node.js auto-install (expects you to have it)
 - Runs the test suite
 - Shows developer-focused output
