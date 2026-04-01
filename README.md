@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/install.s
 The installer will:
 - Check your Mac compatibility (Apple Silicon required)
 - Install Python 3.10+ and Node.js 18+ (if missing)
-- Download EdukaAI Studio to `~/Applications/EdukaAI-Studio/`
+- Download EdukaAI Studio to `./edukaai-studio/` (current directory)
 - Install all dependencies
 - Create a Desktop shortcut
 
@@ -43,11 +43,13 @@ The installer will:
 After installation:
 ```bash
 # Option 1: Double-click 'EdukaAI-Studio.command' on your Desktop
-# Option 2: Run from Terminal:
-~/Applications/EdukaAI-Studio/launch.sh
+# Option 2: Run from the install directory:
+cd edukaai-studio && ./launch.sh
 ```
 
 Then open your browser: **http://localhost:3030**
+
+**Note:** The application is installed in the directory where you ran the install command, under `./edukaai-studio/`.
 
 ### For Developers
 
@@ -66,7 +68,7 @@ cd edukaai-studio
 ```
 
 The installer automatically detects when running from a git repository and:
-- Installs in the current directory (not ~/Applications)
+- Installs in the current directory (does not create subdirectory)
 - Skips Node.js auto-install (expects you to have it)
 - Runs the test suite
 - Shows developer-focused output
@@ -163,7 +165,7 @@ Create a tutor for a specific language by training on dialogues and lessons.
 
 ### Can't connect to localhost:3030
 - Make sure both backend and frontend are running
-- Try: `~/Applications/EdukaAI-Studio/launch.sh`
+- Try: `./edukaai-studio/launch.sh` (from parent directory)
 - Check if port 3030 is already in use by another app
 - Default ports: 3030 (frontend), 8000 (backend)
 

@@ -15,7 +15,6 @@ set -e
 # ============================================================================
 
 REPO_URL="https://github.com/elgap/edukaai-studio"
-DEFAULT_INSTALL_DIR="${HOME}/Applications/EdukaAI-Studio"
 AUTO_YES=false
 
 # ============================================================================
@@ -169,12 +168,19 @@ check_git() {
 # ============================================================================
 
 setup_installation_directory() {
+    # Get the directory where the script was invoked from
+    local invoke_dir="$(pwd)"
+    
     if [ "$MODE" = "user" ]; then
         echo ""
         echo "Setting up installation directory..."
         
+        # Install in current directory (where user ran the command)
+        INSTALL_DIR="${invoke_dir}/edukaai-studio"
+        
         if [ -d "$INSTALL_DIR" ]; then
-            echo "   Existing installation found. Updating..."
+            echo "   Existing installation found at: $INSTALL_DIR"
+            echo "   Updating..."
             rm -rf "$INSTALL_DIR"
         fi
         
@@ -184,6 +190,7 @@ setup_installation_directory() {
         # Download repository
         echo ""
         echo "Downloading EdukaAI Studio..."
+        echo "   Installing to: $INSTALL_DIR"
         git clone --depth 1 "$REPO_URL.git" . 2>&1 | grep -v "Receiving objects" || true
         
         if [ ! -f "README.md" ]; then
@@ -348,6 +355,8 @@ main() {
         echo "   - EdukaAI Studio application"
         echo "   - Required AI/ML libraries"
         echo ""
+        echo "Installation location: $(pwd)/edukaai-studio"
+        echo ""
         
         if [ "$AUTO_YES" = false ]; then
             read_tty -p "Continue with installation? (Y/n) " -n 1 -r
@@ -388,9 +397,12 @@ main() {
     echo ""
     
     if [ "$MODE" = "user" ]; then
+        echo "Installation location: ${INSTALL_DIR}"
+        echo ""
         echo "To start the application:"
         echo "   - Double-click 'EdukaAI-Studio.command' on your Desktop"
         echo "   - Or run: ${INSTALL_DIR}/launch.sh"
+        echo "   - Or cd ${INSTALL_DIR} && ./launch.sh"
         echo ""
         echo "Getting Started:"
         echo "   1. Open your browser to: http://localhost:3030"
