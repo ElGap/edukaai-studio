@@ -14,11 +14,51 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Function to cleanup on exit
+# Function to get all child PIDs recursively
+get_child_pids() {
+    local parent_pid=$1
+    local children=$(pgrep -P $parent_pid 2>/dev/null)
+    echo "$parent_pid"
+    for child in $children; do
+        get_child_pids $child
+    done
+}
+
+# Function to cleanup on exit - kills entire process tree
 cleanup() {
     echo ""
     echo "🛑 Shutting down..."
-    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    
+    # Kill backend and all its children
+    if [ -n "$BACKEND_PID" ]; then
+        for pid in $(get_child_pids $BACKEND_PID); do
+            kill $pid 2>/dev/null
+        done
+    fi
+    
+    # Kill frontend and all its children
+    if [ -n "$FRONTEND_PID" ]; then
+        for pid in $(get_child_pids $FRONTEND_PID); do
+            kill $pid 2>/dev/null
+        done
+    fi
+    
+    # Wait a moment for graceful shutdown
+    sleep 1
+    
+    # Force kill any remaining processes
+    if [ -n "$BACKEND_PID" ]; then
+        for pid in $(get_child_pids $BACKEND_PID); do
+            kill -9 $pid 2>/dev/null
+        done
+    fi
+    
+    if [ -n "$FRONTEND_PID" ]; then
+        for pid in $(get_child_pids $FRONTEND_PID); do
+            kill -9 $pid 2>/dev/null
+        done
+    fi
+    
     exit 0
 }
 
