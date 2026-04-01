@@ -974,6 +974,7 @@ const estimateMemory = (params: number, modelName: string): number => {
 }
 
 const selectBaseModel = (model: BaseModel) => {
+  console.log('[MODEL SELECT] User selected model:', model.id, model.name, model.huggingface_id)
   selectedBaseModel.value = model
   showCustomModelModal.value = false  // Close modal if open
 }
@@ -1155,7 +1156,8 @@ const startTraining = async () => {
       ram_limit_gb: resourceLimits.value.ram_gb
     }
     
-    console.log('Creating training run with config:', runData)
+    console.log('[TRAINING START] Creating training run with config:', JSON.stringify(runData, null, 2))
+    console.log('[TRAINING START] Base model being sent:', runData.base_model_id)
     
     // Call API to create training run
     const response = await api.post('/training/runs', runData)
@@ -1225,13 +1227,17 @@ onMounted(async () => {
     presets.value = presetsResponse.data
     store.setPresets(presetsResponse.data)
     
-    // Auto-select first model and preset
-    if (baseModels.value.length > 0) {
+    // Auto-select first model and preset only if none selected
+    if (baseModels.value.length > 0 && !selectedBaseModel.value) {
+      console.log('[AUTO SELECT] No model selected, auto-selecting first:', baseModels.value[0].id, baseModels.value[0].name)
       selectedBaseModel.value = baseModels.value[0]
+    } else if (selectedBaseModel.value) {
+      console.log('[AUTO SELECT] Keeping existing model selection:', selectedBaseModel.value.id, selectedBaseModel.value.name)
     }
     
-    if (presets.value.length > 0) {
+    if (presets.value.length > 0 && !selectedPreset.value) {
       const defaultPreset = presets.value.find(p => p.is_default) || presets.value[0]
+      console.log('[AUTO SELECT] Auto-selecting preset:', defaultPreset.id, defaultPreset.name)
       selectPreset(defaultPreset)
     }
   } catch (error: any) {

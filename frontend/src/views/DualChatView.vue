@@ -52,7 +52,7 @@
 
     <div v-else :class="chatMode === 'both' ? 'grid gap-6 lg:grid-cols-2' : 'max-w-4xl mx-auto'">
       <!-- Base Model Panel -->
-      <div v-if="chatMode !== 'finetuned'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-420px)]">
+      <div v-if="chatMode !== 'finetuned'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-820px)]">
         <!-- Panel Header -->
         <div class="p-4 border-b border-slate-800 flex items-center justify-between">
           <div>
@@ -137,7 +137,7 @@
       </div>
 
       <!-- Fine-Tuned Model Panel -->
-      <div v-if="chatMode !== 'base'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-420px)]">
+      <div v-if="chatMode !== 'base'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-820px)]">
         <!-- Panel Header -->
         <div class="p-4 border-b border-slate-800 flex items-center justify-between">
           <div>
@@ -230,6 +230,56 @@
       </div>
     </div>
 
+    <!-- Comparison Stats -->
+    <div v-if="chatMode === 'both' && hasComparisonData" class="bg-slate-900 rounded-xl border border-slate-800 p-6">
+      <h3 class="text-lg font-semibold text-white mb-4">Comparison Statistics</h3>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+          <tr class="border-b border-slate-700">
+            <th class="py-2 text-left text-slate-400">Metric</th>
+            <th class="py-2 text-center text-slate-400">Base Model</th>
+            <th class="py-2 text-center text-slate-400">Fine-Tuned</th>
+            <th class="py-2 text-center text-slate-400">Difference</th>
+          </tr>
+          </thead>
+          <tbody>
+          <tr class="border-b border-slate-800">
+            <td class="py-3 text-slate-400">Avg Response Time</td>
+            <td class="py-3 text-center text-white">{{ leftStats.avgResponseTime }}s</td>
+            <td class="py-3 text-center text-white">{{ rightStats.avgResponseTime }}s</td>
+            <td class="py-3 text-center" :class="responseTimeDiff > 0 ? 'text-red-400' : 'text-green-400'">
+              {{ responseTimeDiff > 0 ? '+' : '' }}{{ responseTimeDiff }}%
+            </td>
+          </tr>
+          <tr class="border-b border-slate-800">
+            <td class="py-3 text-slate-400">Avg Tokens Generated</td>
+            <td class="py-3 text-center text-white">{{ leftStats.avgTokens }}</td>
+            <td class="py-3 text-center text-white">{{ rightStats.avgTokens }}</td>
+            <td class="py-3 text-center" :class="tokensDiff > 0 ? 'text-green-400' : 'text-red-400'">
+              {{ tokensDiff > 0 ? '+' : '' }}{{ tokensDiff }}%
+            </td>
+          </tr>
+          <tr>
+            <td class="py-3 text-slate-400">Avg Speed</td>
+            <td class="py-3 text-center text-white">{{ leftStats.avgSpeed }} tok/s</td>
+            <td class="py-3 text-center text-white">{{ rightStats.avgSpeed }} tok/s</td>
+            <td class="py-3 text-center" :class="speedDiff > 0 ? 'text-green-400' : 'text-red-400'">
+              {{ speedDiff > 0 ? '+' : '' }}{{ speedDiff }}%
+            </td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <button
+          @click="resetStats"
+          class="mt-4 text-xs text-slate-400 hover:text-white transition-colors"
+      >
+        Reset Comparison Stats
+      </button>
+    </div>
+
     <!-- Shared Input -->
     <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
       <div class="flex gap-3">
@@ -251,80 +301,9 @@
       </div>
     </div>
 
-    <!-- Comparison Stats -->
-    <div v-if="chatMode === 'both' && hasComparisonData" class="bg-slate-900 rounded-xl border border-slate-800 p-6">
-      <h3 class="text-lg font-semibold text-white mb-4">Comparison Statistics</h3>
-      
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-slate-700">
-              <th class="py-2 text-left text-slate-400">Metric</th>
-              <th class="py-2 text-center text-slate-400">Base Model</th>
-              <th class="py-2 text-center text-slate-400">Fine-Tuned</th>
-              <th class="py-2 text-center text-slate-400">Difference</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr class="border-b border-slate-800">
-              <td class="py-3 text-slate-400">Avg Response Time</td>
-              <td class="py-3 text-center text-white">{{ leftStats.avgResponseTime }}s</td>
-              <td class="py-3 text-center text-white">{{ rightStats.avgResponseTime }}s</td>
-              <td class="py-3 text-center" :class="responseTimeDiff > 0 ? 'text-red-400' : 'text-green-400'">
-                {{ responseTimeDiff > 0 ? '+' : '' }}{{ responseTimeDiff }}%
-              </td>
-            </tr>
-            <tr class="border-b border-slate-800">
-              <td class="py-3 text-slate-400">Avg Tokens Generated</td>
-              <td class="py-3 text-center text-white">{{ leftStats.avgTokens }}</td>
-              <td class="py-3 text-center text-white">{{ rightStats.avgTokens }}</td>
-              <td class="py-3 text-center" :class="tokensDiff > 0 ? 'text-green-400' : 'text-red-400'">
-                {{ tokensDiff > 0 ? '+' : '' }}{{ tokensDiff }}%
-              </td>
-            </tr>
-            <tr>
-              <td class="py-3 text-slate-400">Avg Speed</td>
-              <td class="py-3 text-center text-white">{{ leftStats.avgSpeed }} tok/s</td>
-              <td class="py-3 text-center text-white">{{ rightStats.avgSpeed }} tok/s</td>
-              <td class="py-3 text-center" :class="speedDiff > 0 ? 'text-green-400' : 'text-red-400'">
-                {{ speedDiff > 0 ? '+' : '' }}{{ speedDiff }}%
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <button
-        @click="resetStats"
-        class="mt-4 text-xs text-slate-400 hover:text-white transition-colors"
-      >
-        Reset Comparison Stats
-      </button>
-    </div>
 
-    <!-- Navigation -->
-    <div class="flex items-center justify-between pt-6 border-t border-slate-800">
-      <router-link
-        to="/summary"
-        class="px-6 py-3 text-slate-400 hover:text-white transition-colors"
-      >
-        ← Back to Summary
-      </router-link>
-      
-      <div class="flex gap-3">
-        <router-link
-          to="/configure"
-          class="px-6 py-3 border border-slate-600 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors"
-        >
-          Start New Training
-        </router-link>
-        <button
-          @click="exportModel"
-          class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
-        >
-          Export Model
-        </button>
-      </div>
-    </div>
+
+
 
     <!-- Edit Model Modal -->
     <div
