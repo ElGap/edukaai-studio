@@ -9,7 +9,7 @@
 
 EdukaAI Studio is a user-friendly application for fine-tuning Large Language Models (LLMs) on your Apple Silicon Mac. Built on Apple's [MLX framework](https://github.com/ml-explore/mlx), it provides a simple 5-step wizard to train custom AI models - no coding required!
 
-![EdukaAI Studio Overview](/EdukaAi-studio.png)
+![EdukaAI Studio Overview](/docs/screenshots/EdukaAi-Studio-training.png)
 
 **Perfect for:**
 - Students learning about AI/ML
@@ -17,7 +17,7 @@ EdukaAI Studio is a user-friendly application for fine-tuning Large Language Mod
 - Researchers experimenting with fine-tuning
 - Hobbyists exploring LLM capabilities
 
-## 🚀 Quick Start (5 Minutes)
+## Quick Start (5 Minutes)
 
 ### Installation
 
@@ -53,36 +53,22 @@ After installation:
 
 Then open your browser: **http://localhost:3030**
 
-**Note:** The application is installed in the directory where you ran the install command (e.g., `edukaai-studio/`).
+Check out the [Quick Start Guide](QUICKSTART.md) for a visual step-by-step walkthrough with screenshots!
 
-### For Developers
+## Your First Fine-Tuning (10 Minutes, zere-code)
 
-If you're developing or contributing:
+### Zero-Prep Option: EdukaAi Started Pack
 
-```bash
-# Clone the repository
-git clone https://github.com/elgap/edukaai-studio.git
-cd edukaai-studio
+Don't have training data? No problem! **Download EdukaAi starter pack** from [eduka.elgap.ai](https://eduka.elgap.ai) to get you going immediately.
 
-# Run the installer (detects developer mode automatically)
-./install.sh
+#### EdukaAi Starter Pack includes: 
+- real world data (JSONL) ready for fine tuning
+- an AI-generated story (PDF)
+- Basic instructions (PDF)
 
-# Start the application
-./launch.sh
-```
+> ⚡ **Literally**: Download Starter Pack → Import to EdukaAi Studio → Click Configure → Click Train → Sip Coffee → Click Chat to test your fine tuned model in dual chat
 
-The installer automatically detects when running from a git repository and:
-- Installs in the current directory
-- Skips Node.js auto-install (expects you to have it)
-- Runs the test suite
-- Shows developer-focused output
-
----
-
-## 📖 Your First Fine-Tuning (10 Minutes)
-
-### 1. Prepare Your Data
-
+### Manual Option: Create Your Own Data
 Create a text file with training examples:
 
 **Example 1 - Q&A Format:**
@@ -100,144 +86,31 @@ Answer: A neural network works by processing information through interconnected 
 {"instruction": "Summarize this article", "input": "The quick brown fox...", "output": "A fox jumped over a lazy dog."}
 ```
 
-Alternatively, you can generate training samples interactively using [EdukaAI Curator](https://github.com/elgap/edukaai-curator), a locally-hosted dataset manager with 100% privacy that provides a chat-like interface for creating structured training data—then simply export for EdukaAI Studio and fine-tune in minutes.
-
 Save as `my-training-data.jsonl` (100-1000 examples recommended)
 
-### Step 2: Upload & Train
 
-1. Open EdukaAI Studio in your browser
-2. Click "Upload Dataset" and select your file
-3. Choose a base model:
-   - **Tiny (500M-1B params)** - Fast training, basic tasks
-   - **Small (1B-3B params)** - Good balance of speed & quality
-   - **Medium (3B-7B params)** - Higher quality, requires more RAM
-4. Select training preset:
-   - **Quick** - 100 steps (~5 min) - Good for testing
-   - **Balanced** - 300 steps (~15 min) - Recommended for most uses
-   - **Thorough** - 1000 steps (~1 hour) - Maximum quality
-5. Click "Start Training" and watch the magic happen!
+### **[EdukaAI Curator](https://github.com/ElGap/edukaai-curator)**
+Your local-first data preparation layer. Import samples from various sources. Review, rate, create custom Q&A pairs, and craft the perfect dataset before exporting to EdukaAI Studio.
 
-### Step 3: Test Your Model
-
-After training completes:
-- Go to the **Dual Chat** page
-- Compare responses from the base model vs. your fine-tuned version
-- Export your model as:
-  - **LoRA Adapter** (~10-50MB) - Use with base model
-  - **Fused Model** - Standalone complete model
-  - **GGUF** - For llama.cpp and local inference (soon)
+**Why Curator?**
+- 🏠 **100% Local** — Your data never leaves your Mac
+- 🔌 **Universal Import** — Capture API accepts data from any source (Kaggle, Hugging Face, APIs, files)
+- ✏️ **Visual Editor** — Review samples and create custom question/answer pairs
+- 🎯 **Studio Integration** — One-click export to EdukaAI Studio
+- ☕ **Coffee-Break Speed** — From raw data to fine-tuned model in minutes
 
 ---
 
-## 🎯 Example Use Cases
+## Getting Help
 
-### 1. Customer Support Bot
-Train on past support tickets and responses to create a bot that understands your product.
-
-### 2. Medical Q&A
-Fine-tune on medical literature for a healthcare assistant (educational use only).
-
-### 3. Code Assistant
-Train on your codebase to get an AI that understands your specific coding patterns.
-
-### 4. Creative Writing
-Fine-tune on your favorite author's works to generate similar writing style.
-
-### 5. Language Learning
-Create a tutor for a specific language by training on dialogues and lessons.
-
----
-
-## 🔧 Troubleshooting
-
-### "Installation Failed"
-- Make sure you have Python 3.10+ installed
-- Check that you have at least 2GB free disk space
-- Ensure macOS 12.0 or later
-
-### "Out of Memory" during training
-- Use a smaller base model (1B instead of 7B)
-- Reduce batch size in advanced settings
-- Close other applications to free up RAM
-
-### "Training is slow"
-- This is normal! Fine-tuning takes time
-- Quick preset: ~5 minutes
-- Balanced preset: ~15-30 minutes
-- Thorough preset: ~1-2 hours
-
-### Can't connect to localhost:3030
-- Make sure both backend and frontend are running
-- Try: `./edukaai-studio/launch.sh` (from parent directory)
-- Check if port 3030 is already in use by another app
-- Default ports: 3030 (frontend), 8000 (backend)
-
----
-
-## 🆘 Getting Help
-
+**Quick Start Guide:** [QUICKSTART.md](QUICKSTART.md) - Visual step-by-step guide with screenshots
 
 **Report Issues:** [GitHub Issues](https://github.com/elgap/edukaai-studio/issues)
 
 **Discussions:** [GitHub Discussions](https://github.com/elgap/edukaai-studio/discussions)
 
 ---
-
-## 🏗️ For Developers
-
-Select your base model from our curated list or add a custom MLX-compatible model from HuggingFace. Choose a training preset:
-
-- **Quick** - 100 steps, fast iteration
-- **Balanced** - 300 steps, good results
-- **Thorough** - 1000 steps, maximum quality
-
-Customize hyperparameters:
-- LoRA Rank & Alpha
-- Learning Rate
-- Batch Size
-- Training Steps
-- Validation Split
-
-### 3. Monitor Training
-
-Watch real-time updates via WebSocket:
-- Current step and loss
-- Learning rate adjustments
-- Best checkpoint tracking
-- Resource utilization
-- Live training logs
-
-### 4. Export & Test
-
-After training completes:
-- Download LoRA adapters
-- Export fused model
-- Convert to GGUF format
-- Test in side-by-side chat
-
-## 🏗️ Architecture
-
-```
-EdukaAI Studio
-├── Backend (FastAPI + MLX)
-│   ├── REST API for configuration
-│   ├── WebSocket for real-time updates
-│   ├── Training Manager (async subprocess)
-│   └── SQLite database for metadata
-│
-├── Frontend (Vue.js 3 + Tailwind)
-│   ├── 5-step wizard interface
-│   ├── Real-time log streaming
-│   ├── Interactive charts
-│   └── Responsive design
-│
-└── ML Pipeline (MLX + LoRA)
-    ├── Model downloading & caching
-    ├── LoRA fine-tuning
-    ├── Checkpoint management
-    └── Export to multiple formats
-```
+## 🛠️ Development
 
 ### Tech Stack
 
@@ -259,8 +132,6 @@ EdukaAI Studio
 - mlx-lm - Language model fine-tuning
 - transformers - Model utilities
 - safetensors - Efficient model storage
-
-## 🛠️ Development
 
 ### Quick Setup for Developers
 
@@ -390,21 +261,17 @@ cd frontend && npm run dev
 ```
 
 
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions! Contributing guide coming soon. 
 
-## 📄 License
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [MLX](https://github.com/ml-explore/mlx) - Apple's machine learning framework
 - [HuggingFace](https://huggingface.co/) - Model hub and ecosystem
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
 - [Vue.js](https://vuejs.org/) - Progressive JavaScript framework
-
----
-
-**Project by [ElGap](https://elgap.ai) | Powered By [#RapidMvpMindset](https://elgap.rs/rapid-mvp-mindset)**

@@ -60,6 +60,8 @@ async def upload_dataset(
     name: str = Form(None),
     description: str = Form(None),
     is_validation_set: bool = Form(False),
+    confirm_data_rights: bool = Form(True),  # Default: user confirms they have rights
+    skip_pii_detection: bool = Form(True),   # Default: skip PII if user confirms rights
     db: Session = Depends(get_db)
 ):
     """Upload and validate a dataset JSONL file."""
@@ -138,37 +140,53 @@ async def upload_dataset(
         }
     }
     
-    # SECURITY: Sanitize and anonymize all valid samples before storage
-    logger.info(f"Sanitizing and anonymizing {len(valid_samples)} samples for security...")
-    
-    # Process entire content at once for efficiency
-    raw_content = '\n'.join(json.dumps(s["data"]) for s in valid_samples)
-    sanitized_content, sanitization_warnings, anonymization_report = sanitize_dataset_content(raw_content)
-    
-    # Parse sanitized content back
-    sanitized_samples = []
-    try:
-        for line in sanitized_content.strip().split('\n'):
-            if line:
-                sanitized_samples.append({"data": json.loads(line)})
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing sanitized content: {e}")
-        # Fallback: use original samples
-        sanitized_samples = [{"data": s["data"]} for s in valid_samples]
-        sanitization_warnings.append(f"Anonymization parsing error: {e}")
-    
-    if sanitization_warnings:
-        logger.warning(f"Dataset sanitization warnings: {len(sanitization_warnings)}")
-        for warning in sanitization_warnings[:10]:  # Log first 10
-            logger.warning(f"  - {warning}")
-    
-    # Log anonymization summary
-    if anonymization_report['total_replacements'] > 0:
-        logger.info(
-            f"PII Anonymization Summary: {anonymization_report['total_replacements']} "
-            f"replacements in {anonymization_report['samples_with_pii']} samples. "
-            f"Types: {anonymization_report['types_found']}"
-        )
+    # SECURITY: Conditionally sanitize and anonymize based on user confirmation
+    if skip_pii_detection and confirm_data_rights:
+        # User confirmed rights - skip PII detection for faster upload
+        logger.info(f"Skipping PII detection (user confirmed data rights): {file.filename}")
+        sanitized_samples = valid_samples
+        sanitization_warnings = []
+        anonymization_report = {
+            "total_samples": len(valid_samples),
+            "samples_with_pii": 0,
+            "total_replacements": 0,
+            "types_found": {},
+            "fields_affected": [],
+            "skipped": True,
+            "reason": "User confirmed data rights"
+        }
+    else:
+        # User did not confirm rights - enable PII detection and anonymization
+        logger.info(f"Sanitizing and anonymizing {len(valid_samples)} samples for security...")
+        
+        # Process entire content at once for efficiency
+        raw_content = '\n'.join(json.dumps(s["data"]) for s in valid_samples)
+        sanitized_content, sanitization_warnings, anonymization_report = sanitize_dataset_content(raw_content)
+        
+        # Parse sanitized content back
+        sanitized_samples = []
+        try:
+            for line in sanitized_content.strip().split('\n'):
+                if line:
+                    sanitized_samples.append({"data": json.loads(line)})
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing sanitized content: {e}")
+            # Fallback: use original samples
+            sanitized_samples = [{"data": s["data"]} for s in valid_samples]
+            sanitization_warnings.append(f"Anonymization parsing error: {e}")
+        
+        if sanitization_warnings:
+            logger.warning(f"Dataset sanitization warnings: {len(sanitization_warnings)}")
+            for warning in sanitization_warnings[:10]:  # Log first 10
+                logger.warning(f"  - {warning}")
+        
+        # Log anonymization summary
+        if anonymization_report['total_replacements'] > 0:
+            logger.info(
+                f"PII Anonymization Summary: {anonymization_report['total_replacements']} "
+                f"replacements in {anonymization_report['samples_with_pii']} samples. "
+                f"Types: {anonymization_report['types_found']}"
+            )
     
     # Save file to storage
     storage_path = f"./storage/datasets/{dataset_id}.jsonl"
@@ -227,9 +245,17 @@ async def upload_validation_dataset(
     file: UploadFile = File(...),
     name: str = Form(None),
     description: str = Form(None),
+    confirm_data_rights: bool = Form(True),
+    skip_pii_detection: bool = Form(True),
     db: Session = Depends(get_db)
 ):
     """Upload a validation dataset linked to a parent training dataset."""
+    
+    # Log user acknowledgment
+    if confirm_data_rights:
+        logger.info(f"User confirmed data rights for validation upload: {file.filename}")
+    else:
+        logger.info(f"User did NOT confirm data rights, enabling PII detection for validation: {file.filename}")
     
     # Verify parent dataset exists
     parent_dataset = db.query(Dataset).filter(Dataset.id == parent_id).first()
@@ -302,33 +328,49 @@ async def upload_validation_dataset(
         }
     }
     
-    # SECURITY: Sanitize and anonymize all valid samples before storage
-    logger.info(f"Sanitizing and anonymizing {len(valid_samples)} validation samples for security...")
-    
-    # Process entire content at once
-    raw_content = '\n'.join(json.dumps(s["data"]) for s in valid_samples)
-    sanitized_content, sanitization_warnings, anonymization_report = sanitize_dataset_content(raw_content)
-    
-    # Parse sanitized content back
-    sanitized_samples = []
-    try:
-        for line in sanitized_content.strip().split('\n'):
-            if line:
-                sanitized_samples.append({"data": json.loads(line)})
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing sanitized validation content: {e}")
-        sanitized_samples = [{"data": s["data"]} for s in valid_samples]
-        sanitization_warnings.append(f"Anonymization parsing error: {e}")
-    
-    if sanitization_warnings:
-        logger.warning(f"Validation set sanitization warnings: {len(sanitization_warnings)}")
-    
-    # Log anonymization summary
-    if anonymization_report['total_replacements'] > 0:
-        logger.info(
-            f"Validation Set PII Anonymization: {anonymization_report['total_replacements']} "
-            f"replacements in {anonymization_report['samples_with_pii']} samples"
-        )
+    # SECURITY: Conditionally sanitize and anonymize based on user confirmation
+    if skip_pii_detection and confirm_data_rights:
+        # User confirmed rights - skip PII detection for faster upload
+        logger.info(f"Skipping PII detection for validation set (user confirmed data rights): {file.filename}")
+        sanitized_samples = valid_samples
+        sanitization_warnings = []
+        anonymization_report = {
+            "total_samples": len(valid_samples),
+            "samples_with_pii": 0,
+            "total_replacements": 0,
+            "types_found": {},
+            "fields_affected": [],
+            "skipped": True,
+            "reason": "User confirmed data rights"
+        }
+    else:
+        # User did not confirm rights - enable PII detection and anonymization
+        logger.info(f"Sanitizing and anonymizing {len(valid_samples)} validation samples for security...")
+        
+        # Process entire content at once
+        raw_content = '\n'.join(json.dumps(s["data"]) for s in valid_samples)
+        sanitized_content, sanitization_warnings, anonymization_report = sanitize_dataset_content(raw_content)
+        
+        # Parse sanitized content back
+        sanitized_samples = []
+        try:
+            for line in sanitized_content.strip().split('\n'):
+                if line:
+                    sanitized_samples.append({"data": json.loads(line)})
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing sanitized validation content: {e}")
+            sanitized_samples = [{"data": s["data"]} for s in valid_samples]
+            sanitization_warnings.append(f"Anonymization parsing error: {e}")
+        
+        if sanitization_warnings:
+            logger.warning(f"Validation set sanitization warnings: {len(sanitization_warnings)}")
+        
+        # Log anonymization summary
+        if anonymization_report['total_replacements'] > 0:
+            logger.info(
+                f"Validation Set PII Anonymization: {anonymization_report['total_replacements']} "
+                f"replacements in {anonymization_report['samples_with_pii']} samples"
+            )
     
     # Update validation report
     validation_report["sanitization"] = {

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..core.exceptions import NotFoundError, ValidationError, TrainingError
 from ..core.logging import get_logger
+from ..core import sanitize_dataset_content
 from ..models import get_db, TrainingRun, TrainingPreset, BaseModel as BaseModelDB, Dataset, generate_uuid
 from ..config import get_config, get_settings
 from ..ml.trainer import training_manager
@@ -144,6 +145,9 @@ class CreateTrainingRunRequest(BaseModel):
     gradient_checkpointing: Optional[bool] = None
     num_lora_layers: Optional[int] = Field(default=None, ge=4, le=32)
     prompt_masking: Optional[bool] = None
+    
+    # PII Detection (Experimental)
+    enable_pii_detection: Optional[bool] = Field(default=False, description="Enable experimental PII detection and anonymization")
 
 
 class ExportStatus(BaseModel):
@@ -638,6 +642,10 @@ async def create_training_run(
 ):
     """Create a new training run with configuration."""
     
+    # Log PII detection status (experimental feature)
+    if request.enable_pii_detection:
+        logger.info(f"[EXPERIMENTAL] PII detection enabled for training run. Dataset will be scanned for PII.")
+    
     # Validate dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == request.training_dataset_id).first()
     if not dataset:
@@ -668,7 +676,35 @@ async def create_training_run(
     
     # Copy dataset to run directory
     training_data_path = f"{storage_path}/data/train.jsonl"
-    shutil.copy(dataset.file_path, training_data_path)
+    
+    # Apply PII detection if enabled (experimental feature)
+    if request.enable_pii_detection:
+        logger.info(f"[EXPERIMENTAL] Applying PII detection to dataset for run {run_id}")
+        try:
+            # Read original dataset
+            with open(dataset.file_path, 'r') as f:
+                original_content = f.read()
+            
+            # Apply PII sanitization
+            sanitized_content, warnings, anonymization_report = sanitize_dataset_content(original_content)
+            
+            # Write sanitized version to run directory
+            with open(training_data_path, 'w') as f:
+                f.write(sanitized_content)
+            
+            logger.info(f"[EXPERIMENTAL] PII detection complete: {anonymization_report.get('total_replacements', 0)} replacements made")
+            
+            # Store report in config for reference
+            pii_report = anonymization_report
+        except Exception as e:
+            logger.error(f"[EXPERIMENTAL] PII detection failed: {e}")
+            # Fallback: copy original
+            shutil.copy(dataset.file_path, training_data_path)
+            pii_report = {"error": str(e), "skipped": True}
+    else:
+        # Normal flow: just copy the dataset
+        shutil.copy(dataset.file_path, training_data_path)
+        pii_report = {"skipped": True, "reason": "PII detection not enabled"}
     
     # Handle validation dataset
     validation_data_path = None
@@ -680,7 +716,21 @@ async def create_training_run(
         if not val_dataset:
             raise NotFoundError(f"Validation dataset {request.validation_dataset_id} not found")
         validation_data_path = f"{storage_path}/data/validation.jsonl"
-        shutil.copy(val_dataset.file_path, validation_data_path)
+        
+        # Apply PII detection to validation dataset if enabled
+        if request.enable_pii_detection:
+            try:
+                with open(val_dataset.file_path, 'r') as f:
+                    val_content = f.read()
+                val_sanitized, _, _ = sanitize_dataset_content(val_content)
+                with open(validation_data_path, 'w') as f:
+                    f.write(val_sanitized)
+            except Exception as e:
+                logger.error(f"[EXPERIMENTAL] PII detection failed for validation set: {e}")
+                shutil.copy(val_dataset.file_path, validation_data_path)
+        else:
+            shutil.copy(val_dataset.file_path, validation_data_path)
+        
         validation_dataset_id = val_dataset.id
         use_auto_split = False
         validation_split_percent = None
@@ -717,7 +767,8 @@ async def create_training_run(
                 "total_replacements": 0,
                 "types_found": {},
                 "fields_affected": []
-            }
+            },
+            "enable_pii_detection": request.enable_pii_detection or False
         },
         "hyperparameters": {
             "steps": request.steps or preset.steps,

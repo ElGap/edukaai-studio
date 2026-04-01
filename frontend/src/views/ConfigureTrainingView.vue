@@ -684,36 +684,49 @@
               <span class="text-white">~{{ estimatedTime }}</span>
             </div>
           </div>
+          
+          <!-- Start Training Button -->
+          <div class="pt-4 mt-4 border-t border-slate-800 space-y-4">
+            <button
+              @click="startTraining"
+              :disabled="!canStartTraining || isStartingTraining"
+              :class="[
+                'w-full px-6 py-3 rounded-lg font-medium transition-all flex items-center justify-center gap-2',
+                canStartTraining && !isStartingTraining
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+              ]"
+            >
+              <svg v-if="isStartingTraining" class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              {{ isStartingTraining ? 'Starting Training...' : (canStartTraining ? 'Start Training →' : 'Select Model & Dataset First') }}
+            </button>
+            
+            <!-- Experimental PII Detection Option -->
+            <div class="flex items-start gap-3 bg-amber-900/20 border border-amber-800/50 rounded-lg p-3">
+              <input
+                v-model="enablePiiDetection"
+                type="checkbox"
+                id="pii-detection"
+                class="w-4 h-4 mt-0.5 rounded border-slate-600 bg-slate-800 text-amber-600 focus:ring-amber-500 cursor-pointer"
+              />
+              <label for="pii-detection" class="text-sm text-slate-300 cursor-pointer flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium text-white">Enable PII Detection & Anonymization</span>
+                  <span class="px-2 py-0.5 text-xs font-medium bg-amber-600/30 text-amber-400 rounded-full">Experimental</span>
+                </div>
+                <p class="mt-1 text-slate-400 text-xs">
+                  Automatically detect and anonymize personally identifiable information (PII) 
+                  such as emails, phone numbers, and names in your dataset before training.
+                </p>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-
-    <!-- Actions -->
-    <div class="flex items-center justify-between pt-6 border-t border-slate-800">
-      <router-link
-        to="/"
-        class="px-6 py-3 text-slate-400 hover:text-white transition-colors"
-      >
-        ← Back to Datasets
-      </router-link>
-      
-      <button
-        @click="startTraining"
-        :disabled="!canStartTraining || isStartingTraining"
-        :class="[
-          'px-8 py-3 rounded-lg font-medium transition-all flex items-center gap-2',
-          canStartTraining && !isStartingTraining
-            ? 'bg-blue-600 hover:bg-blue-700 text-white'
-            : 'bg-slate-700 text-slate-500 cursor-not-allowed'
-        ]"
-      >
-        <svg v-if="isStartingTraining" class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-         {{ isStartingTraining ? 'Starting Training...' : (canStartTraining ? 'Start Training →' : 'Select Model & Dataset First') }}
-       </button>
-     </div>
   </div>
 
   <!-- Delete Custom Model Confirmation Modal -->
@@ -833,6 +846,7 @@ const loadingModels = ref(false)
 const loadingPresets = ref(false)
 const isStartingTraining = ref(false)
 const showAdvanced = ref(false)
+const enablePiiDetection = ref(false)  // Experimental: Enable PII detection (unchecked by default)
 
 // Custom model state
 const showCustomModelModal = ref(false)
@@ -1158,9 +1172,16 @@ const startTraining = async () => {
     
     console.log('[TRAINING START] Creating training run with config:', JSON.stringify(runData, null, 2))
     console.log('[TRAINING START] Base model being sent:', runData.base_model_id)
+    console.log('[TRAINING START] PII Detection enabled:', enablePiiDetection.value)
+    
+    // Add PII detection flag
+    const requestData = {
+      ...runData,
+      enable_pii_detection: enablePiiDetection.value
+    }
     
     // Call API to create training run
-    const response = await api.post('/training/runs', runData)
+    const response = await api.post('/training/runs', requestData)
     
     const result = response.data
     console.log('Training run created, full response data:', JSON.stringify(result, null, 2))

@@ -169,8 +169,9 @@
               Preview: {{ uploadedDataset.preview_samples.length }} samples (First 10 + Random 10)
             </p>
             
+            <!-- Show first 2 samples initially -->
             <div
-              v-for="(sample, index) in uploadedDataset.preview_samples.slice(0, 6)"
+              v-for="(sample, index) in uploadedDataset.preview_samples.slice(0, 2)"
               :key="index"
               class="bg-slate-800 rounded-lg p-3 text-sm"
             >
@@ -182,25 +183,26 @@
               <pre class="text-slate-300 overflow-x-auto whitespace-pre-wrap text-xs">{{ JSON.stringify(sample, null, 2) }}</pre>
             </div>
             
-            <div v-if="(uploadedDataset.preview_samples?.length || 0) > 6" class="text-center">
+            <!-- Show more button if there are more than 2 samples -->
+            <div v-if="(uploadedDataset.preview_samples?.length || 0) > 2" class="text-center">
               <button 
                 @click="showAllSamples = !showAllSamples"
                 class="text-xs text-blue-400 hover:text-blue-300 transition-colors"
               >
-                {{ showAllSamples ? 'Show Less' : `+ ${(uploadedDataset.preview_samples?.length || 0) - 6} more samples` }}
+                {{ showAllSamples ? 'Show Less' : `+ ${(uploadedDataset.preview_samples?.length || 0) - 2} more samples` }}
               </button>
             </div>
             
-            <!-- Show all samples when expanded -->
+            <!-- Show remaining samples when expanded -->
             <div v-if="showAllSamples && uploadedDataset.preview_samples" class="space-y-3">
               <div
-                v-for="(sample, index) in (uploadedDataset.preview_samples || []).slice(6)"
-                :key="index + 6"
+                v-for="(sample, index) in (uploadedDataset.preview_samples || []).slice(2)"
+                :key="index + 2"
                 class="bg-slate-800 rounded-lg p-3 text-sm"
               >
                 <div class="flex items-center justify-between mb-1">
                   <span class="text-xs text-slate-500">
-                    {{ (index + 6) < 10 ? `Sample ${index + 7} (First)` : `Sample ${index + 7} (Random)` }}
+                    {{ (index + 2) < 10 ? `Sample ${index + 3} (First)` : `Sample ${index + 3} (Random)` }}
                   </span>
                 </div>
                 <pre class="text-slate-300 overflow-x-auto whitespace-pre-wrap text-xs">{{ JSON.stringify(sample, null, 2) }}</pre>
