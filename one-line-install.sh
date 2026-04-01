@@ -2,6 +2,8 @@
 
 # EdukaAI Studio - One-Line Installer
 # For Apple Silicon users who want to fine-tune LLMs without being developers
+# Usage: curl -fsSL ... | bash
+#        curl -fsSL ... | bash -s -- --yes
 
 set -e
 
@@ -15,11 +17,36 @@ NC='\033[0m'
 # Configuration
 INSTALL_DIR="${HOME}/Applications/EdukaAI-Studio"
 REPO_URL="https://github.com/elgap/edukaai-studio"
-VERSION="${1:-latest}"
+VERSION="latest"
+AUTO_YES=false
+
+# Parse arguments
+for arg in "$@"; do
+    case $arg in
+        --yes|-y)
+            AUTO_YES=true
+            shift
+            ;;
+        *)
+            VERSION="$arg"
+            ;;
+    esac
+done
+
+# Helper function to read from TTY (handles piped execution)
+read_tty() {
+    if [ -t 0 ]; then
+        # stdin is a terminal, read normally
+        read "$@"
+    else
+        # piped execution, read from TTY device
+        read "$@" < /dev/tty
+    fi
+}
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║          🎓 EdukaAI Studio Installer                       ║"
+echo "║          EdukaAI Studio Installer                          ║"
 echo "║     Fine-tune LLMs on Your Apple Silicon Mac               ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
@@ -35,17 +62,23 @@ echo ""
 echo "💾 Installation location: ${INSTALL_DIR}"
 echo ""
 echo "⚠️  Requirements:"
-echo "   • macOS with Apple Silicon (M1/M2/M3)"
+echo "   • macOS with Apple Silicon (M1/M2/M3/M4)"
 echo "   • macOS 12.0 or later"
 echo "   • Internet connection"
 echo "   • ~2GB free disk space"
 echo ""
+if [ "$AUTO_YES" = true ]; then
+    echo "ℹ️  Running in auto mode (--yes flag detected). All prompts will be skipped."
+    echo ""
+fi
 
-read -p "Continue with installation? (Y/n) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]] && [ -n "$REPLY" ]; then
-    echo "Installation cancelled."
-    exit 0
+if [ "$AUTO_YES" = false ]; then
+    read_tty -p "Continue with installation? (Y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]] && [ -n "$REPLY" ]; then
+        echo "Installation cancelled."
+        exit 0
+    fi
 fi
 
 # Check system requirements
@@ -63,12 +96,16 @@ fi
 ARCH=$(uname -m)
 if [[ "$ARCH" != "arm64" ]]; then
     echo -e "${YELLOW}⚠️  Warning: This tool is optimized for Apple Silicon Macs${NC}"
-    echo -e "${YELLOW}   (M1/M2/M3 chips). It may not work correctly on Intel Macs.${NC}"
+    echo -e "${YELLOW}   (M1/M2/M3/M4 chips). It may not work correctly on Intel Macs.${NC}"
     echo ""
-    read -p "Continue anyway? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+    if [ "$AUTO_YES" = false ]; then
+        read_tty -p "Continue anyway? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    else
+        echo "Auto-yes enabled, continuing..."
     fi
 fi
 
@@ -97,6 +134,20 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 PYTHON_VERSION=$(python3 --version 2>&1 | grep -o '3\.[0-9]*' | head -1)
+REQUIRED_VERSION="3.10"
+
+if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$PYTHON_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
+    echo -e "${RED}❌ Python 3.10 or higher is required (found $PYTHON_VERSION)${NC}"
+    echo ""
+    echo "📥 To install Python:"
+    echo "   1. Visit: https://www.python.org/downloads/"
+    echo "   2. Download Python 3.10 or higher"
+    echo "   3. Run the installer"
+    echo ""
+    echo "After installing Python, run this script again."
+    exit 1
+fi
+
 echo -e "${GREEN}✓ Python $PYTHON_VERSION found${NC}"
 
 # Check Node.js
@@ -108,8 +159,9 @@ if ! command -v node &> /dev/null; then
 else
     NODE_VERSION=$(node --version | grep -o 'v[0-9]*' | head -1 | tr -d 'v')
     if [ "$NODE_VERSION" -lt 18 ]; then
-        echo -e "${YELLOW}⚠️  Node.js version $NODE_VERSION found, but 18+ is recommended${NC}"
-        echo "   Node.js will be updated during installation."
+        echo -e "${YELLOW}⚠️  Node.js version $NODE_VERSION found, but 18+ is required${NC}"
+        echo "   Node.js will be upgraded automatically during installation."
+        INSTALL_NODE=true
     else
         echo -e "${GREEN}✓ Node.js $(node --version) found${NC}"
     fi
@@ -154,6 +206,16 @@ if [ ! -f "README.md" ]; then
 fi
 
 echo -e "${GREEN}✓ Downloaded successfully${NC}"
+
+# Create .gitkeep files for storage directories
+echo ""
+echo "📁 Setting up storage directories..."
+touch backend/storage/datasets/.gitkeep 2>/dev/null || true
+touch backend/storage/runs/.gitkeep 2>/dev/null || true
+touch backend/storage/exports/.gitkeep 2>/dev/null || true
+touch backend/storage/app/.gitkeep 2>/dev/null || true
+touch backend/test_data/.gitkeep 2>/dev/null || true
+echo -e "${GREEN}✓ Storage directories configured${NC}"
 
 # Install Node.js if needed
 if [ "$INSTALL_NODE" = true ]; then
@@ -209,25 +271,14 @@ fi
 # Create Desktop shortcut
 echo ""
 echo "🖥️  Creating Desktop shortcut..."
-DESKTOP_LINK="${HOME}/Desktop/EdukaAI Studio.command"
+DESKTOP_LINK="${HOME}/Desktop/EdukaAI-Studio.command"
 cat > "$DESKTOP_LINK" << EOF
 #!/bin/bash
 cd "$INSTALL_DIR"
 ./launch.sh
 EOF
 chmod +x "$DESKTOP_LINK"
-echo -e "${GREEN}✓ Created Desktop shortcut${NC}"
-
-# Create macOS app bundle if possible
-echo ""
-echo "📱 Creating Application bundle..."
-if [ -f "create-app.sh" ]; then
-    ./create-app.sh 2>&1 > /dev/null || true
-    if [ -d "EdukaAI Studio.app" ]; then
-        cp -r "EdukaAI Studio.app" "${HOME}/Desktop/"
-        echo -e "${GREEN}✓ Created 'EdukaAI Studio.app' on your Desktop${NC}"
-    fi
-fi
+echo -e "${GREEN}✓ Created Desktop shortcut: ~/Desktop/EdukaAI-Studio.command${NC}"
 
 # Installation complete
 echo ""
@@ -235,32 +286,42 @@ echo "════════════════════════�
 echo -e "${GREEN}✅ Installation Complete!${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo "🎉 EdukaAI Studio is ready to use!"
+echo " EdukaAI Studio is ready to use!"
 echo ""
 echo "📱 To start the application:"
-echo "   • Double-click 'EdukaAI Studio' on your Desktop"
+echo "   • Double-click 'EdukaAI-Studio.command' on your Desktop"
 echo "   • Or run: ${INSTALL_DIR}/launch.sh"
 echo ""
-echo "📚 Getting Started:"
-echo "   1. Open your browser to: http://localhost:5173"
+echo " Getting Started:"
+echo "   1. Open your browser to: http://localhost:3030"
 echo "   2. Upload your training dataset"
 echo "   3. Select a base model and training preset"
 echo "   4. Click 'Start Training'"
 echo ""
-echo "📖 Documentation: ${INSTALL_DIR}/README.md"
-echo "🐛 Support: https://github.com/anomalyco/opencode/issues"
+echo " Web page: https://eduka.elgap.ai"
+echo " Documentation: ${INSTALL_DIR}/README.md"
+echo " Support: https://github.com/elgap/edukaai-studio/issues"
 echo ""
-echo "💡 Tip: Keep this terminal window open while using EdukaAI Studio"
+echo " Tip: Keep this terminal window open while using EdukaAI Studio"
 echo ""
-echo "Happy fine-tuning! 🚀"
+echo "Happy fine-tuning! "
 echo ""
 
 # Ask to launch now
-read -p "Launch EdukaAI Studio now? (Y/n) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [ -z "$REPLY" ]; then
+if [ "$AUTO_YES" = false ]; then
+    read_tty -p "Launch EdukaAI Studio now? (Y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [ -z "$REPLY" ]]; then
+        echo ""
+        echo "🚀 Launching EdukaAI Studio..."
+        echo "   Opening browser in a few seconds..."
+        echo ""
+        sleep 2
+        ./launch.sh
+    fi
+else
     echo ""
-    echo "🚀 Launching EdukaAI Studio..."
+    echo "🚀 Auto-launching EdukaAI Studio..."
     echo "   Opening browser in a few seconds..."
     echo ""
     sleep 2

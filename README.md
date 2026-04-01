@@ -225,10 +225,10 @@ EdukaAI Studio
 
 **Frontend:**
 - Vue.js 3 - Progressive JavaScript framework
-- Tailwind CSS - Utility-first CSS
 - Pinia - State management
-- Axios - HTTP client
 - Recharts - Data visualization
+- Tailwind CSS - Utility-first CSS
+
 
 **ML Libraries:**
 - mlx-lm - Language model fine-tuning
@@ -342,49 +342,10 @@ Then start normally:
 ./launch.sh
 ```
 
-## 📦 Packaging & Distribution
-
-### Creating Distribution Package
-
-Build a clean package for sharing:
-
-```bash
-# Create distributable .tar.gz
-./build.sh 1.0.0
-
-# Package will be created at:
-# build/edukai-studio-1.0.0.tar.gz
-```
-
-### Creating macOS App Bundle
-
-Create a clickable macOS app:
-
-```bash
-# Create .app bundle
-./create-app.sh 1.0.0
-
-# Install by dragging "EdukaAI Studio.app" to Applications folder
-```
-
-### Distribution Methods
-
-**GitHub Releases:**
-1. Create a new release on GitHub
-2. Attach `edukai-studio-VERSION.tar.gz`
-3. Add release notes
-
-**Direct Download:**
-- Share the .tar.gz file
-- Users extract and run `./install.sh && ./launch.sh`
-
-**macOS App:**
-- Share the .app bundle or compressed .zip
-- Users drag to Applications folder
 
 ## 🤝 Contributing
 
-We welcome contributions! Contributing guide will be added soon.
+We welcome contributions! Contributing guide coming soon. 
 
 ## 📄 License
 
@@ -397,11 +358,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
 - [Vue.js](https://vuejs.org/) - Progressive JavaScript framework
 
-## 📬 Contact
-
-- **Issues**: [GitHub Issues](https://github.com/elgap/edukaai-studio/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/elgap/edukaai-studio/discussions)
-- **Email**: Your email here (optional)
 ---
 
-
+**Project by [ElGap](https://elgap.ai) | Powered By [#RapidMvpMindset](https://elgap.rs/rapid-mvp-mindset)**

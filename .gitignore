@@ -1,13 +1,15 @@
 # Build artifacts
 build/
+dist/
 *.tar.gz
 *.zip
 *.app/
 *.command
+*.egg-info/
 install-edukai.sh
 install.log
 
-# Backend
+# Backend - Python
 backend/.venv/
 backend/__pycache__/
 backend/**/*.pyc
@@ -16,33 +18,70 @@ backend/**/*.pyd
 backend/.Python
 backend/*.so
 backend/*.egg
-backend/*.egg-info/
-backend/dist/
-backend/build/
-backend/.pytest_cache/
-backend/.coverage
-backend/htmlcov/
-backend/.tox/
-backend/.env
-backend/.env.local
-backend/venv/
-backend/ENV/
+dist/
+build/
 
-# Frontend
+# Frontend - Node.js
 frontend/node_modules/
 frontend/dist/
 frontend/dist-ssr/
 frontend/*.local
+
+# Storage - User Data & Generated Files (NEVER commit these)
+# Datasets uploaded by users
+backend/storage/datasets/*
+!backend/storage/datasets/.gitkeep
+
+# Training runs (models, checkpoints, logs, configs)
+backend/storage/runs/*
+!backend/storage/runs/.gitkeep
+backend/storage/runs/**/logs/
+backend/storage/runs/**/*.log
+
+# Application data (SQLite DB, logs, cache, temp files)
+backend/storage/app/*.db
+backend/storage/app/*.db-journal
+backend/storage/app/logs/*
+backend/storage/app/logs/**/
+backend/storage/app/cache/*
+backend/storage/app/temp/*
+backend/storage/db/*.db
+backend/storage/db/*.db-journal
+
+# Model exports
+backend/storage/exports/*
+!backend/storage/exports/.gitkeep
+
+# Test data that may contain user content
+backend/test_data/*
+!backend/test_data/.gitkeep
+backend/test_data/**/*
+
+# Environment files (may contain secrets)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.local
 frontend/.env
 frontend/.env.local
 
-# Storage (data files - don't commit large files)
-backend/storage/datasets/*
-!backend/storage/datasets/.gitkeep
-backend/storage/runs/*
-!backend/storage/runs/.gitkeep
-backend/storage/db/*.db
-backend/storage/db/*.db-journal
+# Logs - All log files anywhere in the project
+*.log
+logs/
+**/logs/
+**/logs/archive/
+**/*.log.*
+
+# Coverage and test artifacts
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+backend/.tox/
+backend/.pytest_cache/
 
 # IDE
 .idea/
@@ -50,13 +89,24 @@ backend/storage/db/*.db-journal
 *.swp
 *.swo
 *~
-.DS_Store
-
-# Logs
-*.log
-logs/
 
 # OS
+.DS_Store
+**/.DS_Store
 Thumbs.db
 
-docs
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Documentation build
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Misc
+**/.cache/
+**/.temp/
+
+AGENTS.md

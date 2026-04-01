@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/one-line-
 - Double-click "EdukaAI Studio" on your Desktop
 - Or run: `~/Applications/EdukaAI-Studio/launch.sh`
 
-Then open browser: **http://localhost:5173**
+Then open browser: **http://localhost:3030**
 
 ---
 
@@ -66,7 +66,7 @@ After training:
 Training time depends on:
 - Model size (larger = slower)
 - Number of training steps
-- Your Mac's speed (M3 > M2 > M1)
+- Your Mac's speed (M4 > M3 > M2 > M1)
 
 Typical times:
 - Quick (100 steps): 5-15 minutes

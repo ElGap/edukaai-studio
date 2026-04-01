@@ -89,6 +89,10 @@
         </transition>
       </router-view>
     </main>
+
+    <footer class="w-full px-4 sm:px-6 lg:px-8 py-4 border-t border-slate-800 bg-slate-900 text-xs text-center text-slate-400">
+      Project by: <a href="https://elgap.ai" class="text-blue-400 hover:text-blue-300 transition-colors">ElGap</a> | Powered by <a href="https://elgap.rs/rapid-mvp-mindset" class="text-blue-400 hover:text-blue-300 transition-colors">#RapidMvpMindset</a>
+    </footer>
   </div>
 </template>
 
