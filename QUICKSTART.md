@@ -40,7 +40,7 @@ Run from terminal:
 
 ### Step 1: Upload Your Dataset
 
-![Step 1: Upload Dataset](EdukaAi-Studio.png)
+![Step 1: Upload Dataset](/docs/screenshots/EdukaAi-Studio.png)
 
 **What you see:**
 - Dataset upload area (drag & drop or click to browse)
@@ -61,7 +61,7 @@ Run from terminal:
 
 ### Step 2: Configure Training
 
-![Step 2: Configure Training](EdukaAi-Studio-configure.png)
+![Step 2: Configure Training](/docs/screenshots/EdukaAi-Studio-configure.png)
 
 **What you see:**
 - Base model selection table
@@ -93,7 +93,7 @@ Run from terminal:
 
 ### Step 3: Monitor Training
 
-![Step 3: Training Progress](EdukaAi-Studio-training.png)
+![Step 3: Training Progress](/docs/screenshots/EdukaAi-Studio-training.png)
 
 **What you see:**
 - Real-time loss curve
@@ -122,7 +122,7 @@ Run from terminal:
 
 ### Step 4: Review Results
 
-![Step 4: Training Summary](EdukaAi-Studio-summary.png)
+![Step 4: Training Summary](/docs/screenshots/EdukaAi-Studio-summary.png)
 
 **What you see:**
 - Training summary statistics
@@ -149,7 +149,7 @@ Run from terminal:
 
 ### Step 5: Test & Compare (Dual Chat)
 
-![Step 5: Dual Chat](EdukaAi-Studio-dual-chat.png)
+![Step 5: Dual Chat](/docs/screenshots/EdukaAi-Studio-dual-chat.png)
 
 **What you see:**
 - Side-by-side model comparison
@@ -178,7 +178,7 @@ Run from terminal:
 
 ### Step 6: Manage Your Models (My Models)
 
-![Step 6: My Models](EdukaAiStudio-my-models.png)
+![Step 6: My Models](/docs/screenshots/EdukaAiStudio-my-models.png)
 
 **What you see:**
 - List of all your trained models
