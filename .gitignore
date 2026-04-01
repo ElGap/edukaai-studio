@@ -52,11 +52,6 @@ backend/storage/db/*.db-journal
 backend/storage/exports/*
 !backend/storage/exports/.gitkeep
 
-# Test data that may contain user content
-backend/test_data/*
-!backend/test_data/.gitkeep
-backend/test_data/**/*
-
 # Environment files (may contain secrets)
 .env
 .env.*
