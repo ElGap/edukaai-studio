@@ -24,35 +24,41 @@ cleanup() {
     echo ""
     echo "Shutting down..."
     
-    # Kill backend and all its children
+    # Send SIGTERM (graceful shutdown) to backend first
+    if [ -n "$BACKEND_PID" ]; then
+        # Try graceful shutdown first
+        kill -TERM $BACKEND_PID 2>/dev/null
+        # Wait for backend to shut down (gives multiprocessing time to clean up)
+        for i in {1..5}; do
+            if ! kill -0 $BACKEND_PID 2>/dev/null; then
+                break
+            fi
+            sleep 0.5
+        done
+    fi
+    
+    # Kill frontend
+    if [ -n "$FRONTEND_PID" ]; then
+        kill -TERM $FRONTEND_PID 2>/dev/null
+        sleep 0.5
+    fi
+    
+    # Force kill any remaining backend processes
     if [ -n "$BACKEND_PID" ]; then
         for pid in $(get_child_pids $BACKEND_PID); do
-            kill $pid 2>/dev/null
+            kill -9 $pid 2>/dev/null
         done
     fi
     
-    # Kill frontend and all its children
+    # Force kill any remaining frontend processes  
     if [ -n "$FRONTEND_PID" ]; then
         for pid in $(get_child_pids $FRONTEND_PID); do
-            kill $pid 2>/dev/null
+            kill -9 $pid 2>/dev/null
         done
     fi
     
-    # Wait a moment for graceful shutdown
+    # Give Python's resource_tracker time to clean up semaphores
     sleep 1
-    
-    # Force kill any remaining processes
-    if [ -n "$BACKEND_PID" ]; then
-        for pid in $(get_child_pids $BACKEND_PID); do
-            kill -9 $pid 2>/dev/null
-        done
-    fi
-    
-    if [ -n "$FRONTEND_PID" ]; then
-        for pid in $(get_child_pids $FRONTEND_PID); do
-            kill -9 $pid 2>/dev/null
-        done
-    fi
     
     exit 0
 }

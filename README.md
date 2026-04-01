@@ -19,39 +19,57 @@ EdukaAI Studio is a user-friendly application for fine-tuning Large Language Mod
 
 ## 🚀 Quick Start (5 Minutes)
 
-### One-Line Installation
+### Installation
 
-**Option A: Copy & paste in Terminal**
+**One-line install** (recommended for most users):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/one-line-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/install.sh | bash
 ```
 
-**Option B: Download and run**
+**Non-interactive install** (for automation/CI):
 ```bash
-# Download the installer
-curl -fsSL -o install-edukai.sh https://raw.githubusercontent.com/elgap/edukaai-studio/main/one-line-install.sh
-
-# Run it
-bash install-edukai.sh
+curl -fsSL https://raw.githubusercontent.com/elgap/edukaai-studio/main/install.sh | bash -s -- --yes
 ```
 
-That's it! The installer will:
+The installer will:
 - Check your Mac compatibility (Apple Silicon required)
-- Download EdukaAI Studio automatically
-- Install Python dependencies
-- Set up everything in `~/Applications/EdukaAI-Studio/`
+- Install Python 3.10+ and Node.js 18+ (if missing)
+- Download EdukaAI Studio to `~/Applications/EdukaAI-Studio/`
+- Install all dependencies
 - Create a Desktop shortcut
 
 ### Launch the Application
 
-After installation completes:
+After installation:
 ```bash
-# Option 1: Double-click 'EdukaAI Studio' on your Desktop
+# Option 1: Double-click 'EdukaAI-Studio.command' on your Desktop
 # Option 2: Run from Terminal:
 ~/Applications/EdukaAI-Studio/launch.sh
 ```
 
-Then open your browser: **http://localhost:5173**
+Then open your browser: **http://localhost:3030**
+
+### For Developers
+
+If you're developing or contributing:
+
+```bash
+# Clone the repository
+git clone https://github.com/elgap/edukaai-studio.git
+cd edukaai-studio
+
+# Run the installer (detects developer mode automatically)
+./install.sh
+
+# Start the application
+./launch.sh
+```
+
+The installer automatically detects when running from a git repository and:
+- Installs in the current directory (not ~/Applications)
+- Skips Node.js auto-install (expects you to have it)
+- Runs the test suite
+- Shows developer-focused output
 
 ---
 
@@ -143,10 +161,11 @@ Create a tutor for a specific language by training on dialogues and lessons.
 - Balanced preset: ~15-30 minutes
 - Thorough preset: ~1-2 hours
 
-### Can't connect to localhost:5173
+### Can't connect to localhost:3030
 - Make sure both backend and frontend are running
 - Try: `~/Applications/EdukaAI-Studio/launch.sh`
-- Check if port 5173 is already in use by another app
+- Check if port 3030 is already in use by another app
+- Default ports: 3030 (frontend), 8000 (backend)
 
 ---
 
@@ -237,6 +256,26 @@ EdukaAI Studio
 
 ## 🛠️ Development
 
+### Quick Setup for Developers
+
+```bash
+# Clone the repository
+git clone https://github.com/elgap/edukaai-studio.git
+cd edukaai-studio
+
+# Run the installer (automatically detects developer mode)
+./install.sh
+
+# Start the application
+./launch.sh
+```
+
+The installer will:
+- Set up Python virtual environment
+- Install all dependencies
+- Run the test suite
+- Create storage directories
+
 ### Project Structure
 
 ```
@@ -293,8 +332,10 @@ VITE_API_URL=http://localhost:8000   # Backend API URL
 VITE_WS_URL=ws://localhost:8000     # WebSocket URL
 
 # Security
-EDUKAAI_SECRET_KEY=your-secret       # Change in production!
 EDUKAAI_ALLOW_REMOTE=false          # Allow remote connections (not recommended)
+
+# HuggingFace
+EDUKAAI_HF_TOKEN=your-token         # For private models and higher rate limits
 
 # Storage
 EDUKAAI_STORAGE_PATH=./storage      # Data storage location
@@ -315,20 +356,7 @@ See `.env.example` for all available options.
 
 If the default ports (8000 backend, 3030 frontend) are already in use:
 
-**Option 1: Environment Variables**
-```bash
-# Terminal 1 - Backend on port 8080
-export EDUKAAI_PORT=8080
-cd backend && source .venv/bin/activate && python run.py
-
-# Terminal 2 - Frontend on port 3000, connecting to backend on 8080
-export VITE_PORT=3000
-export VITE_API_URL=http://localhost:8080
-export VITE_WS_URL=ws://localhost:8080
-cd frontend && npm run dev
-```
-
-**Option 2: Using .env file**
+**Option 1: Using .env file (Recommended)**
 Edit `.env` in project root:
 ```env
 EDUKAAI_PORT=8080
@@ -340,6 +368,19 @@ VITE_WS_URL=ws://localhost:8080
 Then start normally:
 ```bash
 ./launch.sh
+```
+
+**Option 2: Environment Variables**
+```bash
+# Terminal 1 - Backend on port 8080
+export EDUKAAI_PORT=8080
+cd backend && source .venv/bin/activate && python run.py
+
+# Terminal 2 - Frontend on port 3000, connecting to backend on 8080
+export VITE_PORT=3000
+export VITE_API_URL=http://localhost:8080
+export VITE_WS_URL=ws://localhost:8080
+cd frontend && npm run dev
 ```
 
 
