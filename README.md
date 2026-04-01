@@ -55,7 +55,7 @@ Then open your browser: **http://localhost:3030**
 
 Check out the [Quick Start Guide](QUICKSTART.md) for a visual step-by-step walkthrough with screenshots!
 
-## Your First Fine-Tuning (10 Minutes, zere-code)
+## Your First Fine-Tuning (10 Minutes, no-code)
 
 ### Zero-Prep Option: EdukaAi Started Pack
 
@@ -89,7 +89,7 @@ Answer: A neural network works by processing information through interconnected 
 Save as `my-training-data.jsonl` (100-1000 examples recommended)
 
 
-### **[EdukaAI Curator](https://github.com/ElGap/edukaai-curator)**
+### All-in-one option: **[EdukaAI Curator](https://github.com/ElGap/edukaai-curator)**
 Your local-first data preparation layer. Import samples from various sources. Review, rate, create custom Q&A pairs, and craft the perfect dataset before exporting to EdukaAI Studio.
 
 **Why Curator?**
