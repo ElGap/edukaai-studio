@@ -278,4 +278,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 
 ---
-****[AI Curator](https://github.com/elgap/ai-curator)** and **[EdukaAi Studio](https://github.com/elgap/edukaai-studio)** are part of EdukaAI project by Elgap** — making AI & fine-tuning accessible through open-source, no-code, zero config tools.
+[EdukaAI Studio](https://github.com/elgap/edukaai-studio) and [AI Curator](https://github.com/elgap/ai-curator) are part of [EdukaAI](https://eduka.elgap.ai) project by ElGap — making AI & fine-tuning accessible through open-source, no-code, zero config tools.
