@@ -277,4 +277,5 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - [Vue.js](https://vuejs.org/) - Progressive JavaScript framework
 
 
+---
 ****[AI Curator](https://github.com/elgap/ai-curator)** and **[EdukaAi Studio](https://github.com/elgap/edukaai-studio)** are part of EdukaAI project by Elgap** — making AI & fine-tuning accessible through open-source, no-code, zero config tools.
