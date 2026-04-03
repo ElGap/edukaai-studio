@@ -89,7 +89,7 @@ Answer: A neural network works by processing information through interconnected 
 Save as `my-training-data.jsonl` (100-1000 examples recommended)
 
 
-### All-in-one option: **[EdukaAI Curator](https://github.com/ElGap/edukaai-curator)**
+### All-in-one option: **[AI Curator](https://github.com/ElGap/ai-curator)**
 Your local-first data preparation layer. Import samples from various sources. Review, rate, create custom Q&A pairs, and craft the perfect dataset before exporting to EdukaAI Studio.
 
 **Why Curator?**
@@ -275,3 +275,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - [HuggingFace](https://huggingface.co/) - Model hub and ecosystem
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
 - [Vue.js](https://vuejs.org/) - Progressive JavaScript framework
+
+
+****[AI Curator](https://github.com/elgap/ai-curator)** and **[EdukaAi Studio](https://github.com/elgap/edukaai-studio)** are part of EdukaAI project by Elgap** — making AI & fine-tuning accessible through open-source, no-code, zero config tools.
