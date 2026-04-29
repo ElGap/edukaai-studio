@@ -268,3 +268,7 @@ We welcome contributions! Contributing guide coming soon.
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
+
+## SECURITY
+EdukaAI Studio security audits are ongoing. Report is [here](SECURITY.md)  
+
