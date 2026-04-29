@@ -275,7 +275,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - [HuggingFace](https://huggingface.co/) - Model hub and ecosystem
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
 - [Vue.js](https://vuejs.org/) - Progressive JavaScript framework
-
-
----
-[EdukaAI Studio](https://github.com/elgap/edukaai-studio) and [AI Curator](https://github.com/elgap/ai-curator) are part of [EdukaAI](https://eduka.elgap.ai) project by ElGap — making AI & fine-tuning accessible through open-source, no-code, zero config tools.
