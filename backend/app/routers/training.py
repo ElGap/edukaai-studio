@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..core.exceptions import NotFoundError, ValidationError, TrainingError
 from ..core.logging import get_logger
-from ..core import sanitize_dataset_content
+from ..core import sanitize_dataset_content, assert_safe_path
 from ..models import get_db, get_thread_safe_session, TrainingRun, TrainingPreset, ModelRegistry, Dataset, generate_uuid
 from ..config import get_config, get_settings
 from ..ml.trainer import training_manager
@@ -894,6 +894,10 @@ async def create_training_run(
     # Copy dataset to run directory
     training_data_path = f"{storage_path}/data/train.jsonl"
     
+    # Validate dataset file path before accessing it
+    if dataset.file_path:
+        assert_safe_path(dataset.file_path, ["./storage/datasets", str(Path("./storage/datasets").resolve())])
+
     # Apply PII detection if enabled (experimental feature)
     if request.enable_pii_detection:
         logger.info(f"[EXPERIMENTAL] Applying PII detection to dataset for run {run_id}")
@@ -932,6 +936,8 @@ async def create_training_run(
         val_dataset = db.query(Dataset).filter(Dataset.id == request.validation_dataset_id).first()
         if not val_dataset:
             raise NotFoundError(f"Validation dataset {request.validation_dataset_id} not found")
+        if val_dataset.file_path:
+            assert_safe_path(val_dataset.file_path, ["./storage/datasets", str(Path("./storage/datasets").resolve())])
         validation_data_path = f"{storage_path}/data/validation.jsonl"
         
         # Apply PII detection to validation dataset if enabled
@@ -1201,6 +1207,8 @@ async def list_checkpoints(run_id: str, db: Session = Depends(get_db)):
     # MLX-LM saves checkpoints in the main storage directory, not in checkpoints/ subdirectory
     # Check both locations for backwards compatibility
     storage_path = run.storage_path
+    if storage_path:
+        assert_safe_path(storage_path, ["./storage/runs", str(Path("./storage/runs").resolve())])
     checkpoints_subdir = f"{storage_path}/checkpoints"
     
     checkpoint_files = []
@@ -1255,6 +1263,8 @@ async def download_checkpoint(run_id: str, step: int, db: Session = Depends(get_
     
     # Look for checkpoint in main storage directory
     storage_path = run.storage_path
+    if storage_path:
+        assert_safe_path(storage_path, ["./storage/runs", str(Path("./storage/runs").resolve())])
     checkpoint_filename = f"{step:08d}_adapters.safetensors"
     checkpoint_path = os.path.join(storage_path, checkpoint_filename)
     
@@ -1291,8 +1301,10 @@ async def delete_training_run(run_id: str, db: Session = Depends(get_db)):
     
     # Delete storage directory
     try:
-        if os.path.exists(run.storage_path):
-            shutil.rmtree(run.storage_path)
+        if run.storage_path:
+            assert_safe_path(run.storage_path, ["./storage/runs", str(Path("./storage/runs").resolve())])
+            if os.path.exists(run.storage_path):
+                shutil.rmtree(run.storage_path)
     except Exception as e:
         # Log error but continue with DB deletion
         logger.warning(f"Failed to delete storage for run {run_id}: {e}")
@@ -2015,9 +2027,6 @@ async def export_model_endpoint(
         raise TrainingError(f"Export failed: {str(e)}")
 
 
-ALLOWED_EXPORT_FORMATS = {"adapter", "fused", "gguf"}
-
-
 @router.get("/training/runs/{run_id}/exports/{format}/download")
 async def download_export(
     run_id: str,
@@ -2037,8 +2046,6 @@ async def download_export(
     export_path = os.path.normpath(f"{run.storage_path}/exports/{format}")
     if not export_path.startswith(os.path.normpath(run.storage_path)):
         raise ValidationError("Invalid export path")
-    
-    export_path = f"{run.storage_path}/exports/{format}"
     
     if not os.path.exists(export_path):
         raise NotFoundError(f"Export not found for format: {format}")

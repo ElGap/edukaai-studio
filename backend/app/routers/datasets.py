@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..core.exceptions import ValidationError, NotFoundError
-from ..core import sanitize_filename, validate_jsonl_format, detect_format, sanitize_dataset_content
+from ..core import sanitize_filename, validate_jsonl_format, detect_format, sanitize_dataset_content, assert_safe_path
 from ..core.logging import get_logger
 from ..models import get_db, Dataset, TrainingRun, generate_uuid
 from ..config import get_settings
@@ -68,39 +68,64 @@ async def upload_dataset(
     settings = get_settings()
     """Upload and validate a dataset JSONL file."""
     
-    # Validate file type (allow various JSON/text types)
+    # Validate file type — block obviously non-text / non-JSON types
+    blocked_prefixes = (
+        'image/', 'audio/', 'video/', 'application/zip',
+        'application/x-rar', 'application/x-7z', 'application/x-tar',
+        'application/x-exe', 'application/x-msdownload', 'application/x-sh',
+        'application/pdf', 'application/msword', 'application/vnd.openxmlformats',
+    )
+    if file.content_type and any(file.content_type.startswith(bp) for bp in blocked_prefixes):
+        raise ValidationError(
+            f"Blocked content type: '{file.content_type}'. Only plain-text / JSON files are accepted."
+        )
+
+    # Warn but still try to parse for other unexpected types (e.g. octet-stream from some browsers)
     allowed_content_types = [
-        'application/json', 
-        'application/jsonl', 
-        'text/plain', 
+        'application/json',
+        'application/jsonl',
+        'text/plain',
         'text/json',
         'application/octet-stream',
-        None  # Some browsers don't set content_type
+        None,
     ]
     if file.content_type and not any(file.content_type.startswith(ct) or ct is None for ct in allowed_content_types):
         logger.warning(f"Unexpected content type: {file.content_type}")
-        # Don't reject - try to parse anyway
-    
+
     # Generate ID and filename
     dataset_id = generate_uuid()
-    
+
     if name is None:
         base_name = Path(file.filename).stem
         name = sanitize_filename(base_name)
-    
-    # Check file size before reading into memory
-    max_size_bytes = settings.max_storage_gb * 1024 * 1024 * 1024
-    if file.size and file.size > max_size_bytes:
-        raise ValidationError(f"File too large: {file.size / (1024*1024):.1f}MB exceeds limit of {settings.max_storage_gb}GB")
-    
-    # Read file content (with a safety limit of 500MB)
-    content = await file.read()
-    if len(content) > 500 * 1024 * 1024:
-        raise ValidationError("File too large for processing. Maximum 500MB allowed.")
+
+    # Stream upload to a temporary file in chunks (do not read entire file into RAM)
+    import tempfile
+    max_size_bytes = min(settings.max_storage_gb * 1024 * 1024 * 1024, 500 * 1024 * 1024)
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.jsonl')
+    total = 0
+    chunk_size = 64 * 1024
     try:
-        content_str = content.decode('utf-8')
+        while chunk := await file.read(chunk_size):
+            total += len(chunk)
+            if total > max_size_bytes:
+                raise ValidationError("File too large for processing. Maximum 500MB allowed.")
+            os.write(tmp_fd, chunk)
+        os.close(tmp_fd)
+
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            content_str = f.read()
     except UnicodeDecodeError:
         raise ValidationError("File must be valid UTF-8 encoded text")
+    finally:
+        try:
+            os.close(tmp_fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
     
     # Validate JSONL format
     is_valid, valid_samples, errors = validate_jsonl_format(content_str)
@@ -278,7 +303,9 @@ async def upload_validation_dataset(
     if existing_validation:
         # Delete the existing validation set
         try:
-            os.remove(existing_validation.file_path)
+            if existing_validation.file_path:
+                assert_safe_path(existing_validation.file_path, ["./storage/datasets", str(Path("./storage/datasets").resolve())])
+                os.remove(existing_validation.file_path)
         except FileNotFoundError:
             pass
         db.delete(existing_validation)
@@ -291,12 +318,34 @@ async def upload_validation_dataset(
         base_name = Path(file.filename).stem
         name = f"{sanitize_filename(base_name)} (Validation)"
     
-    # Read and validate file
-    content = await file.read()
+    # Stream upload to a temporary file in chunks (do not read entire file into RAM)
+    import tempfile
+    settings = get_settings()
+    max_size_bytes = min(settings.max_storage_gb * 1024 * 1024 * 1024, 500 * 1024 * 1024)
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.jsonl')
+    total = 0
+    chunk_size = 64 * 1024
     try:
-        content_str = content.decode('utf-8')
+        while chunk := await file.read(chunk_size):
+            total += len(chunk)
+            if total > max_size_bytes:
+                raise ValidationError("File too large for processing. Maximum 500MB allowed.")
+            os.write(tmp_fd, chunk)
+        os.close(tmp_fd)
+
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            content_str = f.read()
     except UnicodeDecodeError:
         raise ValidationError("File must be valid UTF-8 encoded text")
+    finally:
+        try:
+            os.close(tmp_fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
     
     # Validate JSONL format
     is_valid, valid_samples, errors = validate_jsonl_format(content_str)
@@ -501,8 +550,10 @@ async def delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
     for run in training_runs:
         # Delete run's storage directory if it exists
         try:
-            if os.path.exists(run.storage_path):
-                shutil.rmtree(run.storage_path)
+            if run.storage_path:
+                assert_safe_path(run.storage_path, ["./storage/runs", str(Path("./storage/runs").resolve())])
+                if os.path.exists(run.storage_path):
+                    shutil.rmtree(run.storage_path)
         except Exception as e:
             logger.warning(f"Could not delete storage for run {run.id}: {e}")
         
@@ -511,7 +562,9 @@ async def delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
     
     # Delete file
     try:
-        os.remove(dataset.file_path)
+        if dataset.file_path:
+            assert_safe_path(dataset.file_path, ["./storage/datasets", str(Path("./storage/datasets").resolve())])
+            os.remove(dataset.file_path)
     except FileNotFoundError:
         pass  # Already deleted
     except Exception as e:

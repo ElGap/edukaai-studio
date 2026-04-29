@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = "change-me-in-production"
     allow_remote: bool = False  # Only accept localhost connections by default
+    # WARNING: Only enable trust_proxy when running behind a trusted reverse proxy.
+    # Enabling this allows clients to spoof their IP via X-Forwarded-For headers,
+    # which could bypass the localhost-only middleware.
+    trust_proxy: bool = False
+    # WARNING: Disabling allow_remote_code will break models that use custom
+    # tokenizers. When enabled, downloaded model code is executed on your machine.
+    # Only load models from sources you trust (e.g. mlx-community).
+    allow_remote_code: bool = True
     
     # HuggingFace
     hf_token: Optional[str] = None

@@ -12,11 +12,34 @@ from .exceptions import EdukaAIException, ValidationError, NotFoundError, Resour
 def sanitize_filename(filename: str) -> str:
     """Sanitize filename to prevent path traversal attacks."""
     import re
-    # Remove path separators and null bytes
+    # Remove path separators, null bytes, and parent-directory sequences
     filename = re.sub(r'[\\/]', '', filename)
     filename = filename.replace('\x00', '')
+    filename = re.sub(r'\.+', '', filename)       # remove any dot sequences
+    filename = filename.strip('.')                # no leading/trailing dots
     # Limit length
-    return filename[:255]
+    return filename[:255] or "unnamed"
+
+
+def assert_safe_path(path: str, allowed_roots: list[str]) -> str:
+    """
+    Validate that a filesystem path stays within allowed root directories.
+    Raises ValidationError if the resolved path escapes any allowed root.
+    Returns the original path string for use in file operations.
+    """
+    from pathlib import Path
+    resolved = Path(path).resolve()
+    for root in allowed_roots:
+        root_resolved = Path(root).resolve()
+        try:
+            resolved.relative_to(root_resolved)
+            return path
+        except ValueError:
+            continue
+    from .exceptions import ValidationError
+    raise ValidationError(
+        f"Path '{path}' escapes allowed directories: {allowed_roots}"
+    )
 
 
 def validate_jsonl_format(content: str) -> tuple[bool, List[Dict], List[Dict]]:

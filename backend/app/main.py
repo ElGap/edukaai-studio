@@ -46,6 +46,18 @@ async def lifespan(app: FastAPI):
         if get_settings().secret_key == "change-me-in-production":
             logger.warning("SECURITY: Using default secret_key. Set EDUKAAI_SECRET_KEY env var for production.")
         
+        if get_settings().allow_remote_code:
+            logger.warning(
+                "SECURITY: allow_remote_code is enabled. Custom tokenizer code from downloaded "
+                "HuggingFace models will be executed on this machine. Only load models from sources you trust."
+            )
+        
+        if get_settings().trust_proxy:
+            logger.warning(
+                "SECURITY: trust_proxy is enabled. Client IP addresses will be read from X-Forwarded-For headers, "
+                "which allows IP spoofing and may bypass the localhost-only security middleware."
+            )
+        
         # Ensure directories exist
         logger.info("Creating storage directories...")
         ensure_directories()

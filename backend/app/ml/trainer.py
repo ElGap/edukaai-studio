@@ -22,6 +22,7 @@ from mlx_lm.tuner.trainer import TrainingCallback
 from mlx_lm.tuner.utils import linear_to_lora_layers, load_adapters, print_trainable_parameters
 
 from ..core.logging import get_logger
+from ..config import get_settings
 import re
 
 # Logging
@@ -639,10 +640,16 @@ class TrainingProcess:
             # Load model
             logger.info("[MODEL LOADING] Loading model into memory...")
             self._update_status("loading_model", f"Loading {self.config.model_id} into memory...")
+            settings = get_settings()
+            if settings.allow_remote_code:
+                logger.warning(
+                    "SECURITY: allow_remote_code is enabled. "
+                    "Custom tokenizer code from the model repository will be executed."
+                )
             self.model, self.tokenizer = await asyncio.to_thread(
                 load,
                 self.model_path,
-                tokenizer_config={"trust_remote_code": True}
+                tokenizer_config={"trust_remote_code": settings.allow_remote_code}
             )
             
             # Model loaded successfully - verify by checking config
@@ -1117,9 +1124,15 @@ async def export_model(
             
             # Load base model with adapters
             logger.info("Loading base model with adapters...")
+            settings = get_settings()
+            if settings.allow_remote_code:
+                logger.warning(
+                    "SECURITY: allow_remote_code is enabled. "
+                    "Custom tokenizer code from the model repository will be executed."
+                )
             model, tokenizer = load(
-                model_path, 
-                tokenizer_config={"trust_remote_code": True},
+                model_path,
+                tokenizer_config={"trust_remote_code": settings.allow_remote_code},
                 adapter_path=str(adapters_dir)
             )
             
@@ -1200,7 +1213,13 @@ async def load_model_for_inference(
         loop = asyncio.get_running_loop()
         
         def _load():
-            model, tokenizer = load(model_path, tokenizer_config={"trust_remote_code": True})
+            settings = get_settings()
+            if settings.allow_remote_code:
+                logger.warning(
+                    "SECURITY: allow_remote_code is enabled. "
+                    "Custom tokenizer code from the model repository will be executed."
+                )
+            model, tokenizer = load(model_path, tokenizer_config={"trust_remote_code": settings.allow_remote_code})
             if adapter_path and os.path.exists(adapter_path):
                 logger.info(f"Loading adapters from {adapter_path}")
                 load_adapters(model, adapter_path)
