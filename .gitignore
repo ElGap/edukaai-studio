@@ -108,3 +108,5 @@ AGENTS.md
 
 docs
 !docs/screenshots
+.build/
+dist/
