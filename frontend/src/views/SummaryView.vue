@@ -458,7 +458,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTrainingStore, type TrainingMetric } from '@/stores/training'
 import axios from 'axios'
@@ -467,6 +467,7 @@ import LogViewer from '@/components/LogViewer.vue'
 
 const router = useRouter()
 const store = useTrainingStore()
+const wizard = inject<any>('wizard')
 
 // Metrics - use store if available (current training), otherwise fetch from API (historical)
 const localMetrics = ref<TrainingMetric[]>([])
@@ -647,17 +648,41 @@ const trainingDuration = computed(() => {
 const finalLoss = computed(() => completedRun.value?.best_loss?.toFixed(3) || 'N/A')
 const validationLoss = computed(() => completedRun.value?.validation_loss?.toFixed(3) || 'N/A')
 const lossImprovement = computed(() => {
-  // Calculate actual improvement if we have training metrics
-  // For now, show a reasonable estimate based on step count
-  const steps = completedRun.value?.total_steps || 0
-  if (steps >= 500) return '75.0'
-  if (steps >= 100) return '65.0'
-  return '50.0'
+  const metrics = completedRun.value?.training_metrics
+  if (!metrics || metrics.length < 2) return 'N/A'
+  const initialLoss = metrics[0]?.train_loss
+  const bestLoss = completedRun.value?.best_loss
+  if (!initialLoss || !bestLoss || initialLoss === 0) return 'N/A'
+  return ((initialLoss - bestLoss) / initialLoss * 100).toFixed(1)
 })
 
-const avgSpeed = computed(() => '1.0') // Steps per second - calculated from training data
-const gpuEfficiency = computed(() => '0.14') // steps/GB
-const memoryEfficiency = computed(() => '85') // tokens/GB
+const avgSpeed = computed(() => {
+  const metrics = completedRun.value?.training_metrics
+  if (!metrics || metrics.length === 0) return 'N/A'
+  const speeds = metrics.filter((m: any) => m.tokens_per_second).map((m: any) => m.tokens_per_second)
+  if (speeds.length === 0) return 'N/A'
+  return (speeds.reduce((a: number, b: number) => a + b, 0) / speeds.length).toFixed(1)
+})
+
+const gpuEfficiency = computed(() => {
+  const metrics = completedRun.value?.training_metrics
+  if (!metrics || metrics.length === 0) return 'N/A'
+  const peakMemoryMB = Math.max(...metrics.map((m: any) => m.gpu_memory_used_mb || 0))
+  if (peakMemoryMB === 0) return 'N/A'
+  const steps = completedRun.value?.current_step || 0
+  return (steps / (peakMemoryMB / 1024)).toFixed(1)
+})
+
+const memoryEfficiency = computed(() => {
+  const metrics = completedRun.value?.training_metrics
+  if (!metrics || metrics.length === 0) return 'N/A'
+  const peakMemoryMB = Math.max(...metrics.map((m: any) => m.gpu_memory_used_mb || 0))
+  if (peakMemoryMB === 0) return 'N/A'
+  const avgTokensPerSecond = metrics.reduce((sum: number, m: any) => sum + (m.tokens_per_second || 0), 0) / metrics.length
+  const durationSec = (new Date(completedRun.value?.completed_at || Date.now()).getTime() - new Date(completedRun.value?.created_at || Date.now()).getTime()) / 1000
+  const totalTokens = avgTokensPerSecond * durationSec
+  return (totalTokens / (peakMemoryMB / 1024)).toFixed(0)
+})
 
 // Data split display based on actual configuration
 const dataSplitDisplay = computed(() => {
@@ -782,7 +807,7 @@ const completedRun = computed(() => store.completedRun)
 
 // Methods
 const goToChat = () => {
-  router.push({ name: 'chat' })
+  wizard.goToStep(5)
 }
 
 const onExportComplete = (format: string) => {

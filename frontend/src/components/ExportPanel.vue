@@ -229,7 +229,10 @@ const exportModel = async (format: 'adapter' | 'fused' | 'gguf') => {
 
 // Download export
 const downloadExport = (format: 'adapter' | 'fused' | 'gguf') => {
-  window.open(`/api/training/runs/${props.model.id}/exports/${format}/download`, '_blank')
+  const a = document.createElement('a')
+  a.href = `/api/training/runs/${props.model.id}/exports/${format}/download`
+  a.download = `${props.model.name || 'model'}-${format}.zip`
+  a.click()
 }
 
 // Load status on mount

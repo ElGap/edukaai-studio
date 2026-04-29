@@ -619,7 +619,6 @@ const loadModels = async () => {
     loading.value = true
     const response = await api.get('/training/runs')
     models.value = response.data
-    showSuccess(`Loaded ${models.value.length} models`)
   } catch (err: any) {
     console.error('Failed to load models:', err)
     showError('Failed to load models: ' + (err.response?.data?.detail || err.message))
@@ -633,7 +632,7 @@ onMounted(() => {
 })
 
 const filteredModels = computed(() => {
-  let result = models.value
+  let result = [...models.value]
 
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()

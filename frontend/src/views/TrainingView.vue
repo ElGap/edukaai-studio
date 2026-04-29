@@ -351,13 +351,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTrainingStore } from '@/stores/training'
 import axios from 'axios'
 
 const router = useRouter()
 const store = useTrainingStore()
+const wizard = inject<any>('wizard')
 
 // API instance
 const api = axios.create({
@@ -367,7 +368,7 @@ const api = axios.create({
 const logsContainer = ref<HTMLDivElement | null>(null)
 
 // State
-const isRunning = ref(true)
+const isRunning = ref(false)
 const isPaused = ref(false)
 const currentStep = ref(0)
 const totalSteps = computed(() => store.activeRun?.total_steps || 1000)
@@ -511,17 +512,13 @@ const visibleValidationPoints = computed(() => {
 
 // Methods
 const addLog = (message: string, level: string = 'info') => {
-  console.log('addLog called:', message, 'Current logs count:', logs.value.length)
   const timestamp = new Date().toLocaleTimeString()
   logs.value.push({ timestamp, message, level })
-  console.log('Log added. New count:', logs.value.length)
   
-  // Keep only last 100 logs
   if (logs.value.length > 100) {
     logs.value = logs.value.slice(-100)
   }
   
-  // Auto-scroll to bottom
   if (autoScrollLogs.value) {
     nextTick(() => {
       if (logsContainer.value) {
@@ -548,23 +545,33 @@ const enableAutoScroll = () => {
   })
 }
 
-const pauseTraining = () => {
+const pauseTraining = async () => {
   isRunning.value = false
   isPaused.value = true
-  addLog('Training paused', 'warning')
+  addLog('Pausing training...', 'warning')
   
   if (ws.value && ws.value.readyState === WebSocket.OPEN) {
     ws.value.send(JSON.stringify({ action: 'pause' }))
   }
+  if (activeRun.value) {
+    try {
+      await api.post(`/training/runs/${activeRun.value.id}/pause`)
+    } catch { /* ws already sent */ }
+  }
 }
 
-const resumeTraining = () => {
+const resumeTraining = async () => {
   isRunning.value = true
   isPaused.value = false
-  addLog('Training resumed', 'success')
+  addLog('Resuming training...', 'success')
   
   if (ws.value && ws.value.readyState === WebSocket.OPEN) {
     ws.value.send(JSON.stringify({ action: 'resume' }))
+  }
+  if (activeRun.value) {
+    try {
+      await api.post(`/training/runs/${activeRun.value.id}/resume`)
+    } catch { /* ws already sent */ }
   }
 }
 
@@ -574,43 +581,51 @@ const stopTraining = () => {
 
 const showStopModal = ref(false)
 
-const confirmStopTraining = () => {
+const confirmStopTraining = async () => {
   showStopModal.value = false
   isRunning.value = false
-  addLog('Training stopped by user', 'warning')
+  addLog('Stopping training...', 'warning')
   
   if (ws.value && ws.value.readyState === WebSocket.OPEN) {
     ws.value.send(JSON.stringify({ action: 'stop' }))
   }
   
-  if (ws.value) {
-    ws.value.close()
+  if (activeRun.value) {
+    try {
+      await api.post(`/training/runs/${activeRun.value.id}/stop`)
+      addLog('Training stopped', 'warning')
+    } catch (error: any) {
+      addLog(`Stop request sent`, 'warning')
+    }
   }
   
-  // Don't redirect to summary when stopped - just stay on training page
-  // User can manually navigate if they want to see partial results
+  if (ws.value) {
+    ws.value.onclose = null
+    ws.value.close()
+  }
 }
 
 const connectWebSocket = () => {
   if (!activeRun.value) return
   
   const runId = activeRun.value.id
-  const wsUrl = `ws://localhost:8000/api/ws/training/runs/${runId}`
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${wsProtocol}//${window.location.host}/api/ws/training/runs/${runId}`
   
   connectionStatus.value = 'Connecting...'
-  addLog('Connecting to training stream...', 'info')
   
   ws.value = new WebSocket(wsUrl)
   
   ws.value.onopen = () => {
     connectionStatus.value = 'Connected'
-    addLog('Connected to training stream', 'success')
     
-    // Stop polling when WebSocket is connected
     stopStatusPolling()
     
-    // Clear previous training metrics when starting new training
     store.clearTrainingMetrics()
+    
+    if (logs.value.length === 0 && activeRun.value?.status_message) {
+      addLog(activeRun.value.status_message, 'info')
+    }
     
     const pingInterval = setInterval(() => {
       if (ws.value && ws.value.readyState === WebSocket.OPEN) {
@@ -619,12 +634,19 @@ const connectWebSocket = () => {
         clearInterval(pingInterval)
       }
     }, 30000)
+    
+    if (ws.value) {
+      ws.value.addEventListener('close', () => clearInterval(pingInterval))
+    }
   }
   
   ws.value.onmessage = (event) => {
-    console.log('WebSocket message received:', event.data)
-    const data = JSON.parse(event.data)
-    console.log('Parsed data:', data)
+    let data: any
+    try {
+      data = JSON.parse(event.data)
+    } catch {
+      return
+    }
     
     if (data.type === 'training_update') {
       const stats = data.data
@@ -661,7 +683,6 @@ const connectWebSocket = () => {
             loss: stats.validation_loss
           })
         }
-      }
         
         // Log training progress periodically (every 10 steps)
         if (stats.current_step % 10 === 0 || stats.current_step === 1) {
@@ -676,9 +697,10 @@ const connectWebSocket = () => {
             'info'
           )
         }
-        
-        // Update resource metrics from backend stats
-        if (stats.peak_memory_mb !== undefined) {
+      }
+      
+      // Update resource metrics (independent of loss data)
+      if (stats.peak_memory_mb !== undefined) {
         peakMemoryGB.value = stats.peak_memory_mb / 1024
         gpuMemoryUsed.value = stats.peak_memory_mb / 1024
       }
@@ -701,21 +723,24 @@ const connectWebSocket = () => {
       }
       
       // Update status
-      console.log('Status update:', stats.status, stats.status_message)
       if (stats.status === 'downloading') {
-        // Show detailed download progress message if available
-        console.log('Download status detected, message:', stats.status_message)
-        if (stats.status_message) {
-          addLog(`${stats.status_message}`, 'info')
-        } else {
-          addLog('Downloading model from HuggingFace...', 'info')
+        const msg = stats.status_message || 'Downloading model from HuggingFace...'
+        if (msg !== lastShownMessage) {
+          addLog(msg, 'info')
+          lastShownMessage = msg
         }
       } else if (stats.status === 'loading_model') {
-        // Model loading status shown in app logs and training log only
-        // Not showing in live chat to avoid clutter
+        const msg = stats.status_message || 'Loading model into GPU memory...'
+        if (msg !== lastShownMessage) {
+          addLog(msg, 'info')
+          lastShownMessage = msg
+        }
       } else if (stats.status === 'model_loaded') {
-        addLog('Model loaded successfully', 'success')
+        lastShownMessage = ''
+        const mem = stats.peak_memory_mb ? ` — ${(stats.peak_memory_mb/1024).toFixed(1)} GB GPU` : ''
+        addLog(`Model loaded successfully${mem}`, 'success')
       } else if (stats.status === 'running') {
+        lastShownMessage = ''
         isRunning.value = true
         isPaused.value = false
       } else if (stats.status === 'paused') {
@@ -750,7 +775,7 @@ const connectWebSocket = () => {
           base_model: activeRun.value?.base_model || { id: '1', huggingface_id: '', name: 'Mock Model', architecture: '', parameter_count: 0, context_length: 0 }
         })
         
-        router.push({ name: 'summary' })
+        wizard.goToStep(4, { completedRun: store.completedRun })
       } else if (stats.status === 'failed') {
         isRunning.value = false
         const errorMsg = stats.error_message || 'Unknown error'
@@ -767,71 +792,60 @@ const connectWebSocket = () => {
     }
   }
   
-  ws.value.onerror = (error) => {
+  ws.value.onerror = () => {
     connectionStatus.value = 'Error'
-    addLog('WebSocket error occurred', 'error')
-    console.error('WebSocket error:', error)
+    startStatusPolling()
   }
   
   ws.value.onclose = async () => {
+    if (isDestroyed) return
     connectionStatus.value = 'Disconnected'
-    addLog('Disconnected from training stream', 'warning')
     
-    // Start polling when WebSocket disconnects
     startStatusPolling()
-    
-    // Check if training completed while WebSocket was closing
-    if (activeRun.value) {
-      try {
-        const response = await api.get(`/training/runs/${activeRun.value.id}`)
-        const runData = response.data
-        
-        if (runData.status === 'completed') {
-          addLog('Training completed! Redirecting to summary...', 'success')
-          store.setCompletedRun(runData)
-          router.push({ name: 'summary' })
-          stopStatusPolling()
-        }
-      } catch (err) {
-        console.error('Failed to check run status after WebSocket close:', err)
-      }
-    }
   }
 }
 
 // Status polling interval (for when WebSocket is disconnected)
 let statusPollInterval: number | null = null
+let pollingInFlight = false
+let lastPollStatus = ''
+let lastPollMessage = ''
 
 const startStatusPolling = () => {
   if (statusPollInterval) return
   
   statusPollInterval = window.setInterval(async () => {
-    if (!activeRun.value || connectionStatus.value === 'Connected') return
+    if (isDestroyed || !activeRun.value || connectionStatus.value === 'Connected' || pollingInFlight) return
     
+    pollingInFlight = true
     try {
       const response = await api.get(`/training/runs/${activeRun.value.id}`)
       const runData = response.data
       
-      // Update UI with latest status
-      if (runData.status !== activeRun.value.status) {
-        console.log(`Status changed via polling: ${activeRun.value.status} -> ${runData.status}`)
+      if (runData.status !== lastPollStatus || (runData.status_message || '') !== lastPollMessage) {
+        lastPollStatus = runData.status
+        lastPollMessage = runData.status_message || ''
         
-        // Update the run in store
-        const runIndex = store.trainingRuns.findIndex(r => r.id === runData.id)
-        if (runIndex !== -1) {
-          store.trainingRuns[runIndex] = runData
+        if (runData.status_message && runData.status !== 'running') {
+          addLog(runData.status_message, 
+            runData.status === 'failed' ? 'error' : 
+            runData.status === 'stopped' ? 'warning' : 'info')
         }
         
-        // Handle completion
         if (runData.status === 'completed') {
           addLog('Training completed! Redirecting to summary...', 'success')
           store.setCompletedRun(runData)
-          router.push({ name: 'summary' })
+          wizard.goToStep(4, { completedRun: runData })
+          stopStatusPolling()
+        } else if (runData.status === 'failed') {
+          addLog(`Training failed: ${runData.error_message || 'Unknown error'}`, 'error')
+          stopStatusPolling()
+        } else if (runData.status === 'stopped') {
+          isRunning.value = false
           stopStatusPolling()
         }
       }
       
-      // Update metrics if available
       if (runData.current_step !== currentStep.value) {
         currentStep.value = runData.current_step
       }
@@ -840,9 +854,14 @@ const startStatusPolling = () => {
       }
     } catch (err) {
       console.error('Failed to poll status:', err)
+    } finally {
+      pollingInFlight = false
     }
-  }, 5000) // Poll every 5 seconds
+  }, 3000)
 }
+
+let isDestroyed = false
+let lastShownMessage = ''
 
 const stopStatusPolling = () => {
   if (statusPollInterval) {
@@ -853,25 +872,23 @@ const stopStatusPolling = () => {
 
 // Lifecycle
 onMounted(async () => {
-  console.log('TrainingView mounted, checking active run...')
-  console.log('activeRunId from store:', store.activeRunId)
-  console.log('trainingRuns count:', store.trainingRuns.length)
-  
-  // Wait a bit for store to be ready
-  await new Promise(resolve => setTimeout(resolve, 100))
-  
-  console.log('After delay - activeRun:', activeRun.value)
+  // If we have an activeRunId but no activeRun data, fetch runs first
+  if (store.activeRunId && !activeRun.value) {
+    try {
+      const resp = await api.get('/training/runs')
+      store.setTrainingRuns(resp.data)
+    } catch {
+      // fetch failed, will redirect below
+    }
+  }
   
   if (!activeRun.value) {
-    console.log('No active run found after delay, redirecting to configure')
-    router.push({ name: 'configure' })
+    wizard.goToStep(2)
     return
   }
   
-  // Check if training is already completed - redirect to summary
   if (activeRun.value.status === 'completed') {
-    console.error('Training has already completed. View results in Summary.')
-    router.push({ name: 'summary' })
+    wizard.goToStep(4, { completedRun: activeRun.value })
     return
   }
   
@@ -880,24 +897,22 @@ onMounted(async () => {
     currentStep.value = activeRun.value.current_step || 0
   }
   
-  // Show initial status
-  addLog('Initializing training environment...', 'info')
+  if (activeRun.value.status_message) {
+    addLog(activeRun.value.status_message, 'info')
+  } else if (activeRun.value.status === 'pending') {
+    addLog('Preparing training environment...', 'info')
+  } else if (activeRun.value.status === 'running') {
+    addLog('Reconnecting to active training...', 'info')
+  }
   
-  // Connect to WebSocket for real-time updates
   connectWebSocket()
   
-  // Only start training if status is pending
   if (activeRun.value.status === 'pending') {
-    addLog('Starting training run...', 'info')
     try {
       await api.post(`/training/runs/${activeRun.value.id}/start`)
-      addLog('Training started successfully!', 'success')
     } catch (error: any) {
-      console.error('Failed to start training:', error)
       addLog(`Failed to start training: ${error.response?.data?.detail || error.message}`, 'error')
     }
-  } else if (activeRun.value.status === 'running') {
-    addLog('Training is in progress...', 'info')
   } else if (activeRun.value.status === 'paused') {
     addLog('Training is paused. Click Resume to continue.', 'warning')
   } else if (activeRun.value.status === 'failed') {
@@ -906,16 +921,16 @@ onMounted(async () => {
     addLog('Training was stopped. Starting new training session...', 'info')
     try {
       await api.post(`/training/runs/${activeRun.value.id}/start`)
-      addLog('Training restarted successfully!', 'success')
     } catch (error: any) {
-      console.error('Failed to restart training:', error)
       addLog(`Failed to restart: ${error.response?.data?.detail || error.message}`, 'error')
     }
   }
 })
 
 onUnmounted(() => {
+  isDestroyed = true
   if (ws.value) {
+    ws.value.onclose = null
     ws.value.close()
   }
   stopStatusPolling()

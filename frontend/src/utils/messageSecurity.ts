@@ -3,21 +3,16 @@
  * Implements highest security standards for chat message rendering
  */
 
-import { marked } from 'marked'
+import { marked, Marked, Renderer } from 'marked'
 import DOMPurify from 'dompurify'
 
-// Configure marked for security
-marked.setOptions({
-  gfm: true,         // GitHub flavored markdown
-  breaks: true     // Convert single line breaks to <br>
-})
+const renderer = new Renderer()
 
-// Allowed markdown features for security
-const allowedMarkdown = {
-  gfm: true,        // GitHub flavored markdown
-  breaks: true,     // Convert single line breaks to <br>
-  tables: true      // Allow tables
-}
+const markedInstance = new Marked({
+  renderer,
+  gfm: true,
+  breaks: true,
+})
 
 /**
  * Escape HTML entities to prevent XSS
@@ -62,7 +57,7 @@ export function renderMarkdown(text: string): string {
   if (!text) return ''
   
   // Parse markdown
-  const rawHtml = marked.parse(text, allowedMarkdown) as string
+  const rawHtml = markedInstance.parse(text) as string
   
   // Sanitize the HTML
   return sanitizeHtml(rawHtml)
@@ -126,13 +121,13 @@ export function validateInput(text: string, maxLength: number = 4000): { isValid
   
   // Check for dangerous patterns
   const dangerousPatterns = [
-    /<script/i,
-    /<iframe/i,
-    /<object/i,
-    /<embed/i,
-    /javascript:/i,
-    /on\w+\s*=/i,
-    /data:text\/html/i
+    /<script\b/i,
+    /<iframe\b/i,
+    /<object\b/i,
+    /<embed\b/i,
+    /javascript\s*:/i,
+    /\bon(click|load|error|mouseover|focus|blur|submit|change)\s*=/i,
+    /data\s*:\s*text\/html/i
   ]
   
   for (const pattern of dangerousPatterns) {

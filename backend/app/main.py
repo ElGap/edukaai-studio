@@ -2,8 +2,19 @@
 EdukaAI Studio - Main FastAPI Application
 """
 
+import os
+from pathlib import Path
+
+# Set HuggingFace cache to live inside our app directory for persistence
+# and cross-app deduplication. This must happen BEFORE any huggingface_hub import.
+os.environ.setdefault(
+    "HF_HUB_CACHE",
+    str(Path.home() / ".edukaai" / "models" / "hub")
+)
+
 import logging
 import sys
+import signal
 import traceback
 from contextlib import asynccontextmanager
 
@@ -12,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import get_settings, ensure_directories
-from .models import init_db, seed_initial_data
+from .models import init_db, seed_initial_data, get_thread_safe_session
 from .core.exceptions import EdukaAIException
 from .core.logging import setup_logging, setup_exception_logging, get_logger
 from .routers import datasets, training, models, chat
@@ -31,6 +42,10 @@ async def lifespan(app: FastAPI):
         logger.info(f"Version: {get_settings().app_version}")
         logger.info(f"Debug mode: {get_settings().debug}")
         
+        # Warn about insecure defaults
+        if get_settings().secret_key == "change-me-in-production":
+            logger.warning("SECURITY: Using default secret_key. Set EDUKAAI_SECRET_KEY env var for production.")
+        
         # Ensure directories exist
         logger.info("Creating storage directories...")
         ensure_directories()
@@ -39,6 +54,12 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing database...")
         init_db()
         seed_initial_data()
+        
+        # Clean up orphaned training runs from previous session
+        _cleanup_orphaned_runs()
+        
+        # Register signal handler for graceful shutdown on SIGINT/SIGTERM
+        _register_shutdown_signals()
         
         logger.info("Application startup complete")
         
@@ -51,9 +72,90 @@ async def lifespan(app: FastAPI):
     # Shutdown
     try:
         logger.info("Shutting down...")
+        _mark_active_runs_stopped()
         logger.info("Shutdown complete")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}", exc_info=True)
+
+
+def _register_shutdown_signals():
+    """Register signal handlers that mark active runs stopped even on KeyboardInterrupt."""
+    original_sigint = signal.getsignal(signal.SIGINT)
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+    
+    def _shutdown_handler(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name}, marking active runs as stopped...")
+        try:
+            _mark_active_runs_stopped()
+        except Exception as e:
+            logger.error(f"Failed to mark runs on signal: {e}")
+        if signum == signal.SIGINT and callable(original_sigint):
+            original_sigint(signum, frame)
+        elif signum == signal.SIGTERM and callable(original_sigterm):
+            original_sigterm(signum, frame)
+        else:
+            sys.exit(0)
+    
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    logger.info("Registered shutdown signal handlers for graceful training cleanup")
+
+
+def _cleanup_orphaned_runs():
+    """Mark orphaned training runs as stopped on startup.
+    
+    After an unclean restart (crash, kill, power loss), runs may be left
+    in 'running'/'downloading'/'loading_model'/'paused' status in the DB
+    but have no live TrainingProcess. Mark them stopped so the user can retry.
+    """
+    from .models import TrainingRun
+    
+    db = get_thread_safe_session()
+    try:
+        orphaned = db.query(TrainingRun).filter(
+            TrainingRun.status.in_(['running', 'downloading', 'loading_model', 'paused'])
+        ).all()
+        
+        if orphaned:
+            logger.warning(f"Found {len(orphaned)} orphaned training runs from previous session")
+            for run in orphaned:
+                prev_status = run.status
+                run.status = "stopped"
+                run.status_message = f"Interrupted by server restart (was {prev_status})"
+                run.error_message = f"Server restarted while training was {prev_status}"
+                logger.info(f"Marked orphaned run {run.id} as stopped (was {prev_status})")
+            db.commit()
+    except Exception as e:
+        logger.error(f"Failed to cleanup orphaned runs: {e}")
+    finally:
+        db.close()
+
+
+def _mark_active_runs_stopped():
+    """Mark all in-progress training runs as stopped on shutdown."""
+    from .models import TrainingRun
+    from datetime import datetime
+    
+    db = get_thread_safe_session()
+    try:
+        active = db.query(TrainingRun).filter(
+            TrainingRun.status.in_(['running', 'downloading', 'loading_model', 'paused'])
+        ).all()
+        
+        if active:
+            logger.info(f"Marking {len(active)} active training runs as stopped on shutdown")
+            for run in active:
+                prev_status = run.status
+                run.status = "stopped"
+                run.status_message = "Server shutting down"
+                run.error_message = f"Server shutdown while training was {prev_status}"
+                run.completed_at = datetime.now()
+            db.commit()
+    except Exception as e:
+        logger.error(f"Failed to mark active runs on shutdown: {e}")
+    finally:
+        db.close()
 
 
 # Create FastAPI app
@@ -88,21 +190,17 @@ async def localhost_only_middleware(request: Request, call_next):
     if getattr(settings, 'allow_remote', False):
         return await call_next(request)
     
-    # Get client IP from various headers
-    client_ip = None
+    # Determine client IP - check direct connection first for security
+    # Only trust forwarded headers when explicitly behind a trusted proxy
+    client_ip = request.client.host if request.client else None
     
-    # Check X-Forwarded-For (for proxy setups)
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-    
-    # Check X-Real-IP
-    if not client_ip:
-        client_ip = request.headers.get("x-real-ip")
-    
-    # Fall back to direct connection
-    if not client_ip:
-        client_ip = request.client.host if request.client else None
+    # If behind a trusted proxy, use forwarded headers
+    if getattr(settings, 'trust_proxy', False):
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+        elif request.headers.get("x-real-ip"):
+            client_ip = request.headers.get("x-real-ip")
     
     # Allow localhost IPs
     allowed_hosts = ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
@@ -169,38 +267,6 @@ async def security_headers_middleware(request: Request, call_next):
     )
     
     return response
-    
-    # Get client IP from various headers
-    client_ip = None
-    
-    # Check X-Forwarded-For (for proxy setups)
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-    
-    # Check X-Real-IP
-    if not client_ip:
-        client_ip = request.headers.get("x-real-ip")
-    
-    # Fall back to direct connection
-    if not client_ip:
-        client_ip = request.client.host if request.client else None
-    
-    # Allow localhost IPs
-    allowed_hosts = ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
-    
-    if client_ip and client_ip not in allowed_hosts:
-        logger.warning(f"Rejected request from non-localhost IP: {client_ip} [Path: {request.url.path}]")
-        return JSONResponse(
-            status_code=403,
-            content={
-                "detail": "Access denied. This server only accepts connections from localhost.",
-                "client_ip": client_ip,
-                "allowed_hosts": allowed_hosts
-            }
-        )
-    
-    return await call_next(request)
 
 
 # Centralized Exception Handlers
@@ -309,6 +375,43 @@ app.include_router(datasets.router, prefix="/api", tags=["datasets"])
 app.include_router(training.router, prefix="/api", tags=["training"])
 app.include_router(models.router, prefix="/api", tags=["models"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
+
+
+# Serve frontend static files in production (single-server mode)
+# The frontend dist directory is built during installation and copied alongside the backend.
+# In development, Vite dev server proxies /api to the backend; in production,
+# the backend serves both API and static files on the same origin.
+# Support multiple resolution strategies for different install layouts (repo, pip, Homebrew).
+_static_dist_candidates = []
+
+# 1. Explicit environment variable (used by Homebrew formula wrapper)
+_env_dist = os.environ.get("EDUKAAI_FRONTEND_DIST")
+if _env_dist:
+    _static_dist_candidates.append(Path(_env_dist))
+
+# 2. Relative to the app package source tree (development / repo checkout)
+_static_dist_candidates.append(Path(__file__).parent.parent.parent / "frontend" / "dist")
+
+# 3. Relative to current working directory (when run from backend/ with frontend sibling)
+_static_dist_candidates.append(Path.cwd().parent / "frontend" / "dist")
+
+# 4. Relative to the Python prefix / venv root
+_static_dist_candidates.append(Path(sys.prefix) / "share" / "edukaai-studio" / "frontend" / "dist")
+
+_static_dist_path = None
+for _candidate in _static_dist_candidates:
+    if _candidate.exists() and (_candidate / "index.html").exists():
+        _static_dist_path = _candidate
+        break
+
+if _static_dist_path:
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_static_dist_path), html=True), name="static")
+    logger.info(f"Serving frontend static files from {_static_dist_path}")
+else:
+    logger.info(
+        f"Frontend dist not found. Checked: {[str(c) for c in _static_dist_candidates]} — running API-only mode"
+    )
 
 
 if __name__ == "__main__":

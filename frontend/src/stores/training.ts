@@ -37,6 +37,7 @@ export interface BaseModel {
   architecture: string
   parameter_count: number
   context_length: number
+  is_downloaded?: boolean
   mlx_config?: {
     is_curated?: boolean
     is_custom?: boolean
@@ -105,6 +106,7 @@ export interface TrainingRun {
   best_step?: number
   validation_loss?: number
   error_message?: string
+  status_message?: string
   created_at: string
   completed_at?: string
   base_model: BaseModel
@@ -112,6 +114,7 @@ export interface TrainingRun {
   fused_exported?: boolean
   gguf_exported?: boolean
   training_config?: TrainingConfig
+  training_metrics?: TrainingMetric[]
 }
 
 export interface TrainingMetric {
@@ -150,7 +153,12 @@ export const useTrainingStore = defineStore('training', () => {
   
   // Training runs fetched from database - no localStorage needed
   const addTrainingRun = (run: TrainingRun) => {
-    trainingRuns.value.push(run)
+    const existingIndex = trainingRuns.value.findIndex(r => r.id === run.id)
+    if (existingIndex === -1) {
+      trainingRuns.value.unshift(run)
+    } else {
+      trainingRuns.value[existingIndex] = run
+    }
   }
   
   const setTrainingRuns = (runs: TrainingRun[]) => {
@@ -158,17 +166,25 @@ export const useTrainingStore = defineStore('training', () => {
   }
   
   // Getters
-  const selectedDataset = computed(() => 
+  const selectedDataset = computed(() =>
     datasets.value.find(d => d.id === selectedDatasetId.value)
   )
-  
-  const activeRun = computed(() => 
+
+  const selectedValidationDataset = computed(() =>
+    datasets.value.find(d => d.id === selectedValidationDatasetId.value)
+  )
+
+  const activeRun = computed(() =>
     trainingRuns.value.find(r => r.id === activeRunId.value)
   )
   
   // Actions
-  const setSelectedDataset = (id: string) => {
+  const setSelectedDataset = (id: string | null) => {
     selectedDatasetId.value = id
+  }
+  
+  const setSelectedValidationDatasetId = (id: string | null) => {
+    selectedValidationDatasetId.value = id
   }
   
   const addDataset = (dataset: Dataset) => {
@@ -247,10 +263,12 @@ export const useTrainingStore = defineStore('training', () => {
     
     // Getters
     selectedDataset,
+    selectedValidationDataset,
     activeRun,
     
     // Actions
     setSelectedDataset,
+    setSelectedValidationDatasetId,
     setValidationSplitPercent,
     addDataset,
     setDatasets,

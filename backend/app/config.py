@@ -130,23 +130,21 @@ class Config:
     
     def _cast_value(self, value: str) -> Any:
         """Auto-cast string values to appropriate types."""
-        # Boolean
-        if value.lower() in ('true', 'false'):
-            return value.lower() == 'true'
+        if value.lower() in ('true', '1', 'yes', 'on'):
+            return True
+        if value.lower() in ('false', '0', 'no', 'off'):
+            return False
         
-        # Integer
         try:
             return int(value)
         except ValueError:
             pass
         
-        # Float
         try:
             return float(value)
         except ValueError:
             pass
         
-        # String (default)
         return value
     
     def refresh_db_cache(self, db_settings: Dict[str, Any]):
@@ -204,7 +202,3 @@ def get_training_output_dir() -> Path:
     output_dir = Path(settings.training_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
-
-
-# Initialize on module load
-ensure_directories()

@@ -134,10 +134,10 @@
                   class="hover:bg-slate-800/50 transition-colors"
                 >
                   <td class="py-2 px-3 text-slate-300">{{ entry.step }}</td>
-                  <td class="py-2 px-3 font-medium" :class="getLossColor(entry.loss)">{{ entry.loss.toFixed(4) }}</td>
-                  <td class="py-2 px-3 text-blue-400">{{ formatLR(entry.learning_rate) }}</td>
-                  <td class="py-2 px-3 text-slate-300">{{ entry.tokens_per_second.toFixed(1) }}</td>
-                  <td class="py-2 px-3 text-slate-300">{{ entry.memory_mb.toFixed(0) }}</td>
+                  <td class="py-2 px-3 font-medium" :class="getLossColor(entry.loss)">{{ (entry.loss ?? 0).toFixed(4) }}</td>
+                  <td class="py-2 px-3 text-blue-400">{{ formatLR(entry.learning_rate ?? 0) }}</td>
+                  <td class="py-2 px-3 text-slate-300">{{ (entry.tokens_per_second ?? 0).toFixed(1) }}</td>
+                  <td class="py-2 px-3 text-slate-300">{{ (entry.memory_mb ?? 0).toFixed(0) }}</td>
                   <td class="py-2 px-3 text-slate-500 text-xs">{{ formatTime(entry.timestamp) }}</td>
                 </tr>
               </tbody>
@@ -154,15 +154,15 @@ import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
 
 interface LogEntry {
-  timestamp: string
-  step: number
-  loss: number
-  learning_rate: number
-  tokens_per_second: number
-  it_per_second: number
-  cpu_percent: number
-  memory_mb: number
-  peak_memory_mb: number
+  timestamp?: string
+  step?: number
+  loss?: number
+  learning_rate?: number
+  tokens_per_second?: number
+  it_per_second?: number
+  cpu_percent?: number
+  memory_mb?: number
+  peak_memory_mb?: number
 }
 
 interface LogData {
@@ -187,37 +187,38 @@ const api = axios.create({
 // Computed stats
 const finalLoss = computed(() => {
   if (!logData.value.entries.length) return 'N/A'
-  return logData.value.entries[logData.value.entries.length - 1].loss.toFixed(3)
+  const loss = logData.value.entries[logData.value.entries.length - 1].loss
+  return loss !== undefined ? loss.toFixed(3) : 'N/A'
 })
 
 const avgSpeed = computed(() => {
   if (!logData.value.entries.length) return 'N/A'
-  const avg = logData.value.entries.reduce((sum, e) => sum + e.tokens_per_second, 0) / logData.value.entries.length
+  const avg = logData.value.entries.reduce((sum, e) => sum + (e.tokens_per_second ?? 0), 0) / logData.value.entries.length
   return avg.toFixed(0)
 })
 
 const peakMemory = computed(() => {
   if (!logData.value.entries.length) return 'N/A'
-  const max = Math.max(...logData.value.entries.map(e => e.peak_memory_mb))
+  const max = Math.max(...logData.value.entries.map(e => e.peak_memory_mb ?? 0))
   return max.toFixed(0)
 })
 
 const currentLR = computed(() => {
   if (!logData.value.entries.length) return 'N/A'
-  const lr = logData.value.entries[logData.value.entries.length - 1].learning_rate
+  const lr = logData.value.entries[logData.value.entries.length - 1].learning_rate ?? 0
   return formatLR(lr)
 })
 
 const maxLR = computed(() => {
   if (!logData.value.entries.length) return '0.00e+00'
-  const max = Math.max(...logData.value.entries.map(e => e.learning_rate))
+  const max = Math.max(...logData.value.entries.map(e => e.learning_rate ?? 0))
   return formatLR(max)
 })
 
 const lrPercentage = computed(() => {
   if (!logData.value.entries.length) return 0
-  const current = logData.value.entries[logData.value.entries.length - 1].learning_rate
-  const max = Math.max(...logData.value.entries.map(e => e.learning_rate))
+  const current = logData.value.entries[logData.value.entries.length - 1].learning_rate ?? 0
+  const max = Math.max(...logData.value.entries.map(e => e.learning_rate ?? 0))
   return max > 0 ? (current / max) * 100 : 0
 })
 
@@ -241,7 +242,10 @@ const loadLog = async () => {
 
 // Download log as CSV
 const downloadLog = () => {
-  window.open(`/api/training/runs/${props.runId}/logs/detailed?format=csv`, '_blank')
+  const a = document.createElement('a')
+  a.href = `/api/training/runs/${props.runId}/logs/detailed?format=csv`
+  a.download = `training-logs-${props.runId}.csv`
+  a.click()
 }
 
 // Format helpers
@@ -250,19 +254,20 @@ const formatLR = (lr: number): string => {
   return lr.toExponential(2)
 }
 
-const formatTime = (timestamp: string): string => {
+const formatTime = (timestamp: string | undefined): string => {
+  if (!timestamp) return '-'
   const date = new Date(timestamp)
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-const getLossColor = (loss: number): string => {
+const getLossColor = (loss: number | undefined): string => {
   const entries = logData.value.entries
-  if (!entries.length) return 'text-slate-300'
-  const min = Math.min(...entries.map(e => e.loss))
-  const max = Math.max(...entries.map(e => e.loss))
+  if (!entries.length || loss === undefined) return 'text-slate-300'
+  const min = Math.min(...entries.map(e => e.loss ?? 0))
+  const max = Math.max(...entries.map(e => e.loss ?? 0))
   const range = max - min
   if (range === 0) return 'text-slate-300'
-  
+
   const normalized = (loss - min) / range
   if (normalized < 0.2) return 'text-green-400'
   if (normalized < 0.5) return 'text-blue-400'

@@ -10,17 +10,11 @@ Tests all 4 security fixes:
 import os
 import sys
 import pytest
+from unittest.mock import patch
 
 # Set testing environment before imports
-os.environ["EDUKAI_ALLOW_REMOTE"] = "true"
-os.environ["EDUKAI_ENV"] = "testing"
-
-sys.path.insert(0, '/Users/developer/Projects/studio/backend')
-
-# Force reload of settings
-import importlib
-from app import config
-importlib.reload(config)
+os.environ["EDUKAAI_ALLOW_REMOTE"] = "true"
+os.environ["EDUKAAI_ENV"] = "testing"
 
 from fastapi.testclient import TestClient
 from app.main import app
@@ -165,11 +159,22 @@ class TestResourceLimits:
 
 class TestLocalhostSecurity:
     """Test localhost-only security middleware"""
-    
+
+    @pytest.fixture(autouse=True)
+    def _override_settings_for_localhost_test(self):
+        from app.config import Settings
+        no_remote_settings = type('S', (), {
+            'allow_remote': False,
+            'trust_proxy': True,
+            'debug': True,
+            'secret_key': 'test',
+        })()
+        with patch("app.main.get_settings", return_value=no_remote_settings):
+            yield
+
     def test_blocks_non_localhost(self):
         """Test that non-localhost requests are blocked"""
         response = client.get("/api/base-models")
-        # TestClient uses 'testclient' as host by default
         assert response.status_code == 403, "Should block non-localhost requests"
     
     def test_allows_localhost_with_header(self):

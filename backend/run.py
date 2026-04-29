@@ -5,11 +5,15 @@ EdukaAI Studio - Run Script
 This script starts the backend server.
 """
 
+import os
 import uvicorn
 from app.config import get_settings
 
 if __name__ == "__main__":
     settings = get_settings()
+    
+    # Reload mode is development-only; disabled by default for production/Homebrew
+    reload = os.environ.get("EDUKAAI_RELOAD", "false").lower() in ("true", "1", "yes")
     
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
@@ -20,6 +24,7 @@ if __name__ == "__main__":
 Starting server...
   Host: {settings.host}
   Port: {settings.port}
+  Reload: {reload}
   API Docs: http://{settings.host}:{settings.port}/docs
 
 Press Ctrl+C to stop
@@ -29,6 +34,6 @@ Press Ctrl+C to stop
         "app.main:app",
         host=settings.host,
         port=settings.port,
-        reload=True,
+        reload=reload,
         log_level="info"
     )

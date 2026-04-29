@@ -16,26 +16,18 @@ from dataclasses import dataclass
 import threading
 import queue
 
-# MLX imports
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
-import numpy as np
 from mlx_lm import load, generate
 from mlx_lm.lora import train_model
-from mlx_lm.tuner.trainer import train, TrainingArgs, TrainingCallback, evaluate
+from mlx_lm.tuner.trainer import TrainingCallback
 from mlx_lm.tuner.utils import linear_to_lora_layers, load_adapters, print_trainable_parameters
-from mlx_lm.tuner.datasets import load_dataset, CacheDataset
 
-# Use centralized logging
 from ..core.logging import get_logger
 import re
 
 # Logging
 logger = get_logger(__name__)
 
-# Import config for persistent paths
-from ..config import get_model_cache_dir
+# (HF_HUB_CACHE is set in main.py before any huggingface_hub import)
 
 # Custom dataset loader for Alpaca format
 def load_alpaca_dataset(data_dir: str, tokenizer, max_seq_length: int = 2048):
@@ -236,9 +228,6 @@ def load_alpaca_dataset(data_dir: str, tokenizer, max_seq_length: int = 2048):
             logger.info(f"Loaded {len(test_samples)} test samples")
     
     return train_dataset, valid_dataset, test_dataset
-    
-    # Create a simple dataset that yields the samples
-    return samples, [], []
 
 
 @dataclass
@@ -261,6 +250,10 @@ class TrainingConfig:
     early_stopping_patience: int = 0
     
     # Advanced params
+    weight_decay: Optional[float] = None
+    max_gradient_norm: Optional[float] = None
+    architecture: str = "qwen2"
+    lora_target_modules: Optional[List[str]] = None
     gradient_checkpointing: bool = False
     num_lora_layers: int = 16
     prompt_masking: bool = True
@@ -275,9 +268,10 @@ class TrainingConfig:
 class MLXTrainingCallback(TrainingCallback):
     """Custom training callback to intercept steps for monitoring and control."""
     
-    def __init__(self, training_process: 'TrainingProcess'):
+    def __init__(self, training_process: 'TrainingProcess', steps_per_report: int = 10):
         self.training_process = training_process
         self.iteration_count = 0
+        self.steps_per_report = steps_per_report
     
     def on_train_loss_report(self, train_info: Dict[str, Any]):
         """Called after training loss report."""
@@ -287,15 +281,19 @@ class MLXTrainingCallback(TrainingCallback):
         if self.training_process._check_should_stop():
             raise InterruptedError("Training stopped by user")
         
-        while self.training_process._check_should_pause():
+        while self.training_process._pause_event.is_set():
+            if not self.training_process._is_paused:
+                self.training_process._is_paused = True
+                self.training_process.status = "paused"
+                logger.info(f"Training {self.training_process.run_id} paused")
             time.sleep(0.5)
-            if self.training_process._check_should_stop():
+            if self.training_process._stop_event.is_set():
                 raise InterruptedError("Training stopped while paused")
         
         # Get training info
         # mlx_lm calls this every steps_per_report iterations
         # So actual step = iteration_count * steps_per_report
-        actual_step = self.iteration_count * 10  # steps_per_report is 10
+        actual_step = self.iteration_count * self.steps_per_report
         loss = train_info.get("train_loss", train_info.get("loss", 0))
         
         # Update training process state
@@ -432,9 +430,9 @@ class TrainingProcess:
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_status_change: Optional[Callable[[str, str], None]] = None  # (status, message)
         
-        # Control flags
-        self._should_stop = False
-        self._should_pause = False
+        # Control flags (thread-safe)
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
         self._is_paused = False
         
         # MLX objects
@@ -449,139 +447,6 @@ class TrainingProcess:
         
         logger.info(f"TrainingProcess initialized for run {run_id}")
     
-    def _validate_cached_model(self, download_dir: Path, expected_model_id: str) -> bool:
-        """Validate that cached model matches the expected model ID.
-        
-        Args:
-            download_dir: Path to the downloaded model directory
-            expected_model_id: The HuggingFace model ID we expect
-            
-        Returns:
-            True if model is valid and matches expected ID, False otherwise
-        """
-        try:
-            config_file = download_dir / "config.json"
-            if not config_file.exists():
-                logger.warning(f"[VALIDATION] No config.json found in {download_dir}")
-                return False
-            
-            # Read the config to get the model identifier
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-            
-            # Get model identifier from config
-            config_model_id = config.get('_name_or_path', '')
-            model_type = config.get('model_type', 'unknown')
-            
-            logger.info(f"[VALIDATION] Cached model config: _name_or_path='{config_model_id}', model_type='{model_type}'")
-            logger.info(f"[VALIDATION] Expected model ID: '{expected_model_id}'")
-            
-            # Validate by checking if expected model ID is in the config
-            # Handle various formats: mlx-community/Llama-3.2-1B, meta-llama/Llama-3.2-1B, etc.
-            expected_name = expected_model_id.split('/')[-1] if '/' in expected_model_id else expected_model_id
-            
-            if config_model_id and expected_model_id in config_model_id:
-                logger.info(f"[VALIDATION] ✓ Model matches expected ID")
-                return True
-            elif config_model_id and expected_name in config_model_id:
-                logger.info(f"[VALIDATION] ✓ Model name '{expected_name}' found in config")
-                return True
-            elif config_model_id == expected_model_id:
-                logger.info(f"[VALIDATION] ✓ Exact match")
-                return True
-            else:
-                logger.warning(f"[VALIDATION] ✗ MISMATCH DETECTED!")
-                logger.warning(f"[VALIDATION]   Expected: {expected_model_id}")
-                logger.warning(f"[VALIDATION]   Found in cache: {config_model_id}")
-                logger.warning(f"[VALIDATION]   Will clear cache and re-download")
-                return False
-                
-        except Exception as e:
-            logger.error(f"[VALIDATION] Error validating cached model: {e}")
-            return False
-
-    def _check_model_cached(self, model_id: str) -> bool:
-        """Check if model is already cached locally with all required files.
-        
-        Checks in order:
-        1. Our custom download directory (storage/runs/downloaded_models/)
-        2. HuggingFace cache directory
-        
-        Includes validation to ensure cached model matches expected model_id.
-        """
-        from pathlib import Path
-        
-        logger.info(f"[CACHE CHECK] Looking for model: {model_id}")
-        
-        # First check our custom download directory (now persistent via EDUKAAI_MODEL_CACHE_DIR)
-        try:
-            cache_base_dir = get_model_cache_dir()
-            download_dir = cache_base_dir / model_id.replace("/", "--")
-            logger.info(f"[CACHE CHECK] Checking custom directory: {download_dir}")
-            logger.info(f"[CACHE CHECK] Cache base directory: {cache_base_dir}")
-            
-            if download_dir.exists():
-                config_file = download_dir / "config.json"
-                safetensors_files = list(download_dir.glob("model*.safetensors"))
-                
-                if config_file.exists() and safetensors_files:
-                    logger.info(f"[CACHE CHECK] Found files in custom directory: {len(safetensors_files)} safetensors files")
-                    
-                    # VALIDATE the cached model
-                    if self._validate_cached_model(download_dir, model_id):
-                        logger.info(f"[CACHE CHECK] ✓ Model {model_id} validated and ready to use")
-                        return True
-                    else:
-                        # Model doesn't match - clear it
-                        logger.warning(f"[CACHE CHECK] Cached model doesn't match {model_id}, clearing...")
-                        import shutil
-                        shutil.rmtree(download_dir)
-                        logger.info(f"[CACHE CHECK] Cleared mismatched cache directory")
-                else:
-                    logger.info(f"[CACHE CHECK] Directory exists but missing files: config={config_file.exists()}, weights={len(safetensors_files)}")
-            else:
-                logger.info(f"[CACHE CHECK] Custom download directory does not exist")
-        except Exception as e:
-            logger.error(f"[CACHE CHECK] Error checking custom download directory: {e}")
-        
-        # Then check HuggingFace cache directory
-        try:
-            cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-            model_name = model_id.replace("/", "--")
-            model_cache_path = cache_dir / f"models--{model_name}"
-            
-            logger.info(f"[CACHE CHECK] Checking HF cache at: {model_cache_path}")
-            
-            if not model_cache_path.exists():
-                logger.info(f"[CACHE CHECK] HF cache directory does not exist")
-                return False
-            
-            snapshots_dir = model_cache_path / "snapshots"
-            if not snapshots_dir.exists() or not any(snapshots_dir.iterdir()):
-                logger.info(f"[CACHE CHECK] HF snapshots directory empty")
-                return False
-            
-            # Check if config.json exists in any snapshot
-            for snapshot in snapshots_dir.iterdir():
-                if snapshot.is_dir():
-                    config_file = snapshot / "config.json"
-                    safetensors_files = list(snapshot.glob("*.safetensors"))
-                    
-                    if config_file.exists() and safetensors_files:
-                        logger.info(f"[CACHE CHECK] Found valid HF cache at {snapshot}")
-                        return True
-                    elif config_file.exists():
-                        logger.warning(f"[CACHE CHECK] HF snapshot missing weights: {snapshot}")
-                    elif safetensors_files:
-                        logger.warning(f"[CACHE CHECK] HF snapshot missing config: {snapshot}")
-            
-            logger.info(f"[CACHE CHECK] No valid HF cache found")
-            return False
-            
-        except Exception as e:
-            logger.error(f"[CACHE CHECK] Error checking HF cache: {e}")
-            return False
-    
     def _update_status(self, status: str, message: str = ""):
         """Update status and notify via callback."""
         self.status = status
@@ -591,7 +456,7 @@ class TrainingProcess:
                 self.on_status_change(status, message)
             except Exception as e:
                 logger.error(f"Error in status change callback: {e}")
-    
+
     def _apply_resource_limits(self):
         """Apply CPU and memory limits to the process."""
         if self.config.cpu_cores_limit:
@@ -604,18 +469,18 @@ class TrainingProcess:
                 logger.info(f"Limited CPU to cores: {limited_cores}")
             except Exception as e:
                 logger.warning(f"Could not set CPU affinity: {e}")
-    
+
     def _monitor_resources(self) -> Dict[str, Any]:
         """Monitor current resource usage."""
         try:
             process = psutil.Process()
             memory_info = process.memory_info()
             cpu_percent = process.cpu_percent(interval=0.1)
-            
+
             # Track peaks
             self.peak_memory_mb = max(self.peak_memory_mb, memory_info.rss / 1024 / 1024)
             self.peak_cpu_percent = max(self.peak_cpu_percent, cpu_percent)
-            
+
             return {
                 "cpu_percent": cpu_percent,
                 "memory_mb": memory_info.rss / 1024 / 1024,
@@ -625,7 +490,7 @@ class TrainingProcess:
         except Exception as e:
             logger.warning(f"Resource monitoring error: {e}")
             return {}
-    
+
     def _write_detailed_log_header(self):
         """Write CSV header to detailed log file."""
         try:
@@ -634,7 +499,7 @@ class TrainingProcess:
                 f.write("timestamp,step,loss,learning_rate,tokens_per_second,it_per_second,cpu_percent,memory_mb,peak_memory_mb\n")
         except Exception as e:
             logger.warning(f"Could not create detailed log file: {e}")
-    
+
     def _write_detailed_log_entry(self, step: int, loss: float, learning_rate: float, tokens_per_sec: float, it_per_sec: float, resources: Dict):
         """Write detailed log entry."""
         try:
@@ -642,282 +507,103 @@ class TrainingProcess:
             cpu_percent = resources.get("cpu_percent", 0)
             memory_mb = resources.get("memory_mb", 0)
             peak_memory_mb = resources.get("peak_memory_mb", 0)
-            
+
             with open(self.detailed_log_path, 'a') as f:
                 f.write(f"{timestamp},{step},{loss:.6f},{learning_rate:.2e},{tokens_per_sec:.2f},{it_per_sec:.2f},{cpu_percent:.1f},{memory_mb:.1f},{peak_memory_mb:.1f}\n")
         except Exception as e:
             logger.warning(f"Could not write to detailed log: {e}")
-    
+
     def _check_should_stop(self) -> bool:
         """Check if training should stop."""
-        return self._should_stop
-    
+        return self._stop_event.is_set()
+
     def _check_should_pause(self) -> bool:
         """Check if training should pause."""
-        if self._should_pause and not self._is_paused:
+        if self._pause_event.is_set() and not self._is_paused:
             self._is_paused = True
             self.status = "paused"
             logger.info(f"Training {self.run_id} paused")
             return True
         return False
-    
+
     def _resume_from_pause(self):
         """Resume training from pause."""
-        self._should_pause = False
+        self._pause_event.clear()
         self._is_paused = False
         self.status = "running"
         logger.info(f"Training {self.run_id} resumed")
-    
-    def _download_model(self, model_id: str) -> bool:
-        """Download model files from HuggingFace."""
-        try:
-            from huggingface_hub import hf_hub_download, HfFileSystem, get_hf_file_metadata
-            from huggingface_hub import login as hf_login
-            import shutil
-            from ..config import get_settings
-            from pathlib import Path
-            
-            # IMMEDIATE STOP CHECK at function entry
-            if self._check_should_stop():
-                logger.info("[STOP CHECK] Stop signal detected at download start - aborting immediately")
-                self._update_status("stopped", "Download stopped by user")
-                return False
-            
-            # Check if model already exists in our persistent cache directory
-            cache_base_dir = get_model_cache_dir()
-            download_dir = cache_base_dir / model_id.replace("/", "--")
-            logger.info(f"[DOWNLOAD] Using persistent cache directory: {cache_base_dir}")
-            
-            if download_dir.exists():
-                config_file = download_dir / "config.json"
-                safetensors_files = list(download_dir.glob("model*.safetensors"))
-                
-                if config_file.exists() and safetensors_files:
-                    logger.info(f"[SKIP DOWNLOAD] Model already exists in {download_dir}")
-                    logger.info(f"[SKIP DOWNLOAD] This cache survives app reinstalls!")
-                    self._update_status("downloading", f"Using cached model from {download_dir}")
-                    return True
-            
-            # Check for HF_TOKEN and login if available
-            settings = get_settings()
-            hf_token = settings.hf_token
-            if hf_token:
-                logger.info("[AUTH] HF_TOKEN found, logging into HuggingFace Hub...")
-                try:
-                    hf_login(token=hf_token)
-                    logger.info("[AUTH] Successfully authenticated with HuggingFace Hub")
-                except Exception as auth_error:
-                    logger.warning(f"[AUTH] Failed to authenticate: {auth_error}")
-                    logger.info("[AUTH] Proceeding with unauthenticated download")
-            else:
-                logger.info("[AUTH] No HF_TOKEN found, using unauthenticated download")
-            
-            logger.info(f"[DOWNLOAD START] Model: {model_id}")
-            self._update_status("downloading", f"Starting download of {model_id}...")
-            
-            # Use persistent cache directory (survives app reinstalls)
-            cache_base_dir = get_model_cache_dir()
-            download_dir = cache_base_dir / model_id.replace("/", "--")
-            download_dir.mkdir(parents=True, exist_ok=True)
-            
-            logger.info(f"[DOWNLOAD DIR] {download_dir}")
-            logger.info(f"[DOWNLOAD DIR] Persistent cache location (survives reinstalls)")
-            
-            # Use HfFileSystem to list files in the repo
-            fs = HfFileSystem()
-            
-            # Get list of files in the repo
+
+    DOWNLOAD_ALLOW_PATTERNS = [
+        "*.safetensors",
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "preprocessor_config.json",
+        "processor_config.json",
+        "chat_template.json",
+        "chat_template.jinja",
+        "vocab.json",
+        "merges.txt",
+        "tokenizer.model",
+        "generation_config.json",
+        "model.safetensors.index.json",
+    ]
+
+    def _resolve_model_path(self, model_id: str) -> str:
+        """Return local snapshot path for model_id, downloading if needed.
+
+        Uses the native HuggingFace cache (controlled via HF_HUB_CACHE env var).
+        Delegates all caching, deduplication, resume, and validation to
+        huggingface_hub.snapshot_download. Returns the snapshot directory path
+        that can be passed directly to mlx_lm.load().
+        """
+        from huggingface_hub import snapshot_download, login as hf_login
+        from huggingface_hub.utils import LocalEntryNotFoundError
+        from ..config import get_settings
+
+        settings = get_settings()
+        hf_token = settings.hf_token or None
+
+        if hf_token:
             try:
-                repo_files = fs.ls(model_id, detail=False)
-                logger.info(f"[REPO FILES] Found {len(repo_files)} files in repo {model_id}")
-            except Exception as e:
-                logger.error(f"[REPO ERROR] Could not list files in repo {model_id}: {e}")
-                repo_files = []
-            
-            downloaded_files = []
-            
-            # Check for stop signal before listing
-            if self._check_should_stop():
-                logger.info("[STOP CHECK] Stop detected after file listing - aborting")
-                self._update_status("stopped", "Download stopped by user")
-                return False
-            
-            # List of essential files to download
-            essential_files = [
-                "config.json",
-                "tokenizer.json", 
-                "tokenizer_config.json",
-                "special_tokens_map.json",
-                "preprocessor_config.json",
-                "chat_template.json",
-                "vocab.json",
-                "merges.txt",
-                "tokenizer.model"
-            ]
-            
-            # Find and download all safetensors files
-            safetensors_files = [f for f in repo_files if f.endswith('.safetensors')]
-            if safetensors_files:
-                logger.info(f"[WEIGHTS] Found {len(safetensors_files)} model weight files to download")
-                logger.info("[IMPORTANT] Each file download cannot be interrupted once started. Stop signal is checked between files.")
-                
-                for i, safetensors_file in enumerate(safetensors_files):
-                    # Check for stop signal before each file
-                    if self._check_should_stop():
-                        logger.info(f"[STOP CHECK] File {i+1}/{len(safetensors_files)}: Stop signal detected - aborting download")
-                        self._update_status("stopped", "Download stopped by user")
-                        return False
-                    
-                    filename = safetensors_file.split('/')[-1]
-                    file_size_mb = 0
-                    
-                    # Try to get file size info
-                    try:
-                        metadata = get_hf_file_metadata(filename=filename, repo_id=model_id, token=hf_token)
-                        file_size_mb = metadata.size / (1024 * 1024) if metadata.size else 0
-                        size_info = f" ({file_size_mb:.1f} MB)" if file_size_mb > 0 else ""
-                        logger.info(f"[DOWNLOAD] File {i+1}/{len(safetensors_files)}: {filename}{size_info}")
-                    except:
-                        logger.info(f"[DOWNLOAD] File {i+1}/{len(safetensors_files)}: {filename}")
-                    
-                    try:
-                        self._update_status("downloading", f"Downloading {filename} ({i+1}/{len(safetensors_files)})...")
-                        downloaded_path = hf_hub_download(
-                            repo_id=model_id,
-                            filename=filename,
-                            local_dir=str(download_dir),
-                            local_dir_use_symlinks=False,
-                            resume_download=True,
-                            token=hf_token  # Pass token explicitly
-                        )
-                        downloaded_files.append(downloaded_path)
-                        logger.info(f"[DOWNLOAD COMPLETE] File {i+1}/{len(safetensors_files)}: {filename}")
-                    except Exception as e:
-                        logger.error(f"[DOWNLOAD FAILED] File {i+1}/{len(safetensors_files)}: {filename} - {e}")
-            else:
-                # Try common weight file patterns if we couldn't list
-                logger.warning("[WEIGHTS] No safetensors files found in listing, trying common patterns...")
-                weight_patterns = [
-                    "model.safetensors",
-                    "model-00001-of-00001.safetensors",
-                    "model-00001-of-00002.safetensors",
-                    "pytorch_model.bin",
-                    "model.bin"
-                ]
-                for pattern in weight_patterns:
-                    if self._check_should_stop():
-                        logger.info("[STOP CHECK] Stop signal received during download, aborting...")
-                        self._update_status("stopped", "Download stopped by user")
-                        return False
-                    
-                    try:
-                        logger.info(f"[DOWNLOAD] Trying to download: {pattern}...")
-                        self._update_status("downloading", f"Downloading {pattern}...")
-                        downloaded_path = hf_hub_download(
-                            repo_id=model_id,
-                            filename=pattern,
-                            local_dir=str(download_dir),
-                            local_dir_use_symlinks=False,
-                            resume_download=True,
-                            token=hf_token
-                        )
-                        downloaded_files.append(downloaded_path)
-                        logger.info(f"[DOWNLOAD COMPLETE] {pattern}")
-                        break  # Stop after first successful weight download
-                    except Exception as e:
-                        logger.debug(f"[DOWNLOAD FAILED] {pattern}: {e}")
-            
-            # Check for stop signal before config files
-            if self._check_should_stop():
-                logger.info("[STOP CHECK] Stop detected before config files - aborting")
-                self._update_status("stopped", "Download stopped by user")
-                return False
-            
-            # Download essential config/tokenizer files
-            logger.info(f"[CONFIG] Downloading configuration files...")
-            for i, filename in enumerate(essential_files):
-                if self._check_should_stop():
-                    logger.info(f"[STOP CHECK] Config file {i+1}/{len(essential_files)}: Stop detected - aborting")
-                    self._update_status("stopped", "Download stopped by user")
-                    return False
-                
-                try:
-                    logger.info(f"[DOWNLOAD] Config file {i+1}/{len(essential_files)}: {filename}...")
-                    self._update_status("downloading", f"Downloading {filename}...")
-                    downloaded_path = hf_hub_download(
-                        repo_id=model_id,
-                        filename=filename,
-                        local_dir=str(download_dir),
-                        local_dir_use_symlinks=False,
-                        resume_download=True,
-                        token=hf_token
-                    )
-                    downloaded_files.append(downloaded_path)
-                    logger.info(f"[DOWNLOAD COMPLETE] Config file {i+1}/{len(essential_files)}: {filename}")
-                except Exception as e:
-                    logger.debug(f"[DOWNLOAD FAILED] Config file {i+1}/{len(essential_files)}: {filename} - {e}")
-            
-            # Verify we have the essential files
-            config_file = download_dir / "config.json"
-            safetensors_files = list(download_dir.glob("*.safetensors"))
-            bin_files = list(download_dir.glob("*.bin"))
-            
-            if not config_file.exists():
-                logger.error("[VERIFY FAILED] Download failed: config.json not found")
-                return False
-            
-            if not safetensors_files and not bin_files:
-                logger.error("[VERIFY FAILED] Download failed: No model weights found")
-                return False
-            
-            # MLX models expect 'model*.safetensors' naming convention
-            # Rename if downloaded file uses different naming (e.g., 'weights.00.safetensors')
-            # Only rename files that don't already have 'model' prefix AND don't create duplicates
-            if safetensors_files:
-                # Check if we already have properly named model files
-                existing_model_files = list(download_dir.glob("model*.safetensors"))
-                
-                if existing_model_files:
-                    logger.info(f"[MLX COMPAT] Found {len(existing_model_files)} properly named model files, skipping rename")
-                else:
-                    # No model files exist, need to rename
-                    weights_files = [f for f in safetensors_files if not f.name.startswith('model')]
-                    total_shards = len(weights_files)
-                    
-                    for idx, weights_file in enumerate(sorted(weights_files)):
-                        # Determine new name
-                        if total_shards == 1:
-                            new_name = weights_file.parent / 'model.safetensors'
-                        else:
-                            # For sharded models, extract shard number
-                            shard_match = re.search(r'(\d+)', weights_file.name)
-                            if shard_match:
-                                shard_num = int(shard_match.group(1)) + 1
-                                new_name = weights_file.parent / f'model-{shard_num:05d}-of-{total_shards:05d}.safetensors'
-                            else:
-                                new_name = weights_file.parent / f'model-{idx+1:05d}-of-{total_shards:05d}.safetensors'
-                        
-                        # Only rename if target doesn't already exist
-                        if not new_name.exists():
-                            logger.info(f"[RENAME] {weights_file.name} -> {new_name.name} (MLX compatibility)")
-                            try:
-                                weights_file.rename(new_name)
-                            except Exception as e:
-                                logger.warning(f"[RENAME FAILED] {weights_file.name}: {e}")
-                        else:
-                            logger.info(f"[SKIP RENAME] {weights_file.name} -> {new_name.name} (target already exists)")
-            
-            logger.info(f"[DOWNLOAD SUCCESS] Model downloaded to {download_dir}")
-            logger.info(f"[DOWNLOAD SUCCESS] Total files downloaded: {len(downloaded_files)}")
-            self._update_status("downloading", f"Model download complete! {len(downloaded_files)} files downloaded")
-            return True
-            
-        except Exception as e:
-            logger.error(f"[DOWNLOAD ERROR] Failed to download model {model_id}: {e}")
-            logger.exception(e)
-            self.error_message = f"Failed to download model: {str(e)}"
-            return False
-    
+                hf_login(token=hf_token)
+            except Exception:
+                pass
+
+        # 1. Check if already cached without any network round-trip
+        try:
+            cached_path = snapshot_download(
+                repo_id=model_id,
+                allow_patterns=self.DOWNLOAD_ALLOW_PATTERNS,
+                local_files_only=True,
+                token=hf_token,
+            )
+            logger.info(f"[MODEL RESOLUTION] Using cached model: {cached_path}")
+            return cached_path
+        except LocalEntryNotFoundError:
+            logger.info(f"[MODEL RESOLUTION] Model not in local cache, will download...")
+
+        # Stop check before downloading
+        if self._check_should_stop():
+            raise RuntimeError("Download stopped by user")
+
+        self._update_status("downloading", f"Downloading {model_id}...")
+
+        # 2. Download (XET-backed, parallel, resumable)
+        downloaded_path = snapshot_download(
+            repo_id=model_id,
+            allow_patterns=self.DOWNLOAD_ALLOW_PATTERNS,
+            resume_download=True,
+            token=hf_token,
+        )
+
+        if self._check_should_stop():
+            raise RuntimeError("Download stopped by user")
+
+        logger.info(f"[MODEL RESOLUTION] Downloaded model to: {downloaded_path}")
+        return downloaded_path
+
     async def train(self):
         """
         Main training loop using mlx_lm.
@@ -927,7 +613,7 @@ class TrainingProcess:
             self.start_time = datetime.now()
             
             # Apply resource limits
-            self._apply_resource_limits()
+            await asyncio.to_thread(self._apply_resource_limits)
             
             logger.info("=" * 70)
             logger.info(f"[TRAINING START] Run ID: {self.run_id}")
@@ -937,46 +623,12 @@ class TrainingProcess:
             logger.info(f"[TRAINING CONFIG] Output path: {self.config.output_path}")
             logger.info("=" * 70)
             
-            # Determine model path with detailed logging
-            # Use persistent cache directory (survives app reinstalls)
-            cache_base_dir = get_model_cache_dir()
-            download_dir = cache_base_dir / self.config.model_id.replace("/", "--")
+            # Resolve model path via native HuggingFace cache
             logger.info(f"[MODEL RESOLUTION] Expected model: {self.config.model_id}")
-            logger.info(f"[MODEL RESOLUTION] Cache base dir: {cache_base_dir}")
-            logger.info(f"[MODEL RESOLUTION] Model specific dir: {download_dir}")
-            logger.info(f"[MODEL RESOLUTION] Note: Cache survives app reinstalls")
-            
-            # Check if model needs to be downloaded
-            # First check our custom download directory
-            if download_dir.exists() and any(download_dir.glob("model*.safetensors")):
-                # Use downloaded model - but VALIDATE first
-                logger.info(f"[MODEL RESOLUTION] Found files in custom directory, validating...")
-                if self._validate_cached_model(download_dir, self.config.model_id):
-                    self.model_path = str(download_dir)
-                    logger.info(f"[MODEL RESOLUTION] ✓ Using validated cached model at: {self.model_path}")
-                else:
-                    logger.warning(f"[MODEL RESOLUTION] ✗ Cached model validation failed, will re-download")
-                    import shutil
-                    shutil.rmtree(download_dir)
-                    logger.info(f"[MODEL RESOLUTION] Cleared invalid cache, downloading...")
-                    download_success = self._download_model(self.config.model_id)
-                    if not download_success:
-                        raise FileNotFoundError(f"Failed to download model {self.config.model_id}")
-                    self.model_path = str(download_dir)
-                    logger.info(f"[MODEL RESOLUTION] Using freshly downloaded model at: {self.model_path}")
-            elif self._check_model_cached(self.config.model_id):
-                # Model exists in HF cache, use HF ID
-                self.model_path = self.config.model_id
-                logger.info(f"[MODEL RESOLUTION] Using HuggingFace cache for: {self.model_path}")
-            else:
-                # Model not found anywhere, download it
-                logger.info(f"[MODEL RESOLUTION] Model {self.config.model_id} not found, downloading...")
-                download_success = self._download_model(self.config.model_id)
-                if not download_success:
-                    raise FileNotFoundError(f"Failed to download model {self.config.model_id}")
-                # Use downloaded model path
-                self.model_path = str(download_dir)
-                logger.info(f"[MODEL RESOLUTION] Using downloaded model at: {self.model_path}")
+            self.model_path = await asyncio.to_thread(
+                self._resolve_model_path, self.config.model_id
+            )
+            logger.info(f"[MODEL RESOLUTION] Using model at: {self.model_path}")
             
             # Log final model path before loading
             logger.info("=" * 70)
@@ -987,7 +639,8 @@ class TrainingProcess:
             # Load model
             logger.info("[MODEL LOADING] Loading model into memory...")
             self._update_status("loading_model", f"Loading {self.config.model_id} into memory...")
-            self.model, self.tokenizer = load(
+            self.model, self.tokenizer = await asyncio.to_thread(
+                load,
                 self.model_path,
                 tokenizer_config={"trust_remote_code": True}
             )
@@ -1039,12 +692,22 @@ class TrainingProcess:
             args.seed = 0
             args.grad_checkpoint = self.config.gradient_checkpointing
             args.grad_accumulation_steps = self.config.gradient_accumulation_steps
+            if self.config.weight_decay is not None:
+                args.optimizer_config["adam"]["weight_decay"] = self.config.weight_decay
+                args.optimizer_config["adamw"]["weight_decay"] = self.config.weight_decay
+            args.max_grad_norm = self.config.max_gradient_norm
             args.clear_cache_threshold = 0
             args.lr_schedule = None  # Disable mlx_lm's built-in schedule, we handle it manually in callback
+            from ..core.model_architectures import get_lora_keys, validate_lora_keys_against_model
+
+            lora_keys = self.config.lora_target_modules or get_lora_keys(self.config.architecture)
+            lora_keys = validate_lora_keys_against_model(self.model, lora_keys)
+            logger.info(f"LoRA target keys (validated against model): {lora_keys}")
             args.lora_parameters = {
+                "keys": lora_keys,
                 "rank": self.config.lora_rank,
                 "dropout": self.config.lora_dropout,
-                "scale": self.config.lora_alpha / self.config.lora_rank  # scale = alpha / rank
+                "scale": self.config.lora_alpha / self.config.lora_rank
             }
             args.mask_prompt = self.config.prompt_masking
             args.report_to = None
@@ -1154,7 +817,7 @@ class TrainingProcess:
                 raise ValueError(f"Failed to load dataset: {str(e)}")
             
             # Create training callback
-            training_callback = MLXTrainingCallback(self)
+            training_callback = MLXTrainingCallback(self, steps_per_report=args.steps_per_report)
             
             # Log validation dataset info
             logger.info(f"DEBUG: Before train_model - valid_set type={type(valid_set)}, len={len(valid_set) if valid_set else 'None'}")
@@ -1193,6 +856,12 @@ class TrainingProcess:
             self.status = "stopped"
             self.end_time = datetime.now()
             logger.info(f"Training {self.run_id} stopped by user")
+            
+            if self.on_error:
+                try:
+                    self.on_error("stopped:Training stopped by user")
+                except Exception as callback_error:
+                    logger.error(f"Error in stopped callback: {callback_error}")
             
         except FileNotFoundError as e:
             self.status = "failed"
@@ -1235,19 +904,19 @@ class TrainingProcess:
     
     def pause(self):
         """Pause training."""
-        self._should_pause = True
+        self._pause_event.set()
         logger.info(f"Pause requested for training {self.run_id}")
     
     def resume(self):
         """Resume training from pause."""
-        self._should_pause = False
+        self._pause_event.clear()
         if self._is_paused:
             self._resume_from_pause()
         logger.info(f"Resume requested for training {self.run_id}")
     
     def stop(self):
         """Stop training."""
-        self._should_stop = True
+        self._stop_event.set()
         logger.info(f"Stop requested for training {self.run_id}")
     
     def get_stats(self) -> Dict[str, Any]:
@@ -1361,9 +1030,10 @@ training_manager = TrainingManager()
 async def export_model(
     model_path: str,
     adapter_path: str,
-    export_format: str,  # "adapter", "fused", "gguf"
+    export_format: str,
     output_path: str,
-    hyperparameters: Optional[Dict] = None
+    hyperparameters: Optional[Dict] = None,
+    lora_target_modules: Optional[list] = None
 ) -> str:
     """
     Export a trained model in various formats.
@@ -1436,7 +1106,7 @@ async def export_model(
                     "dropout": lora_dropout,
                     "scale": lora_alpha / lora_rank if lora_rank > 0 else 1.0
                 },
-                "target_modules": ["q_proj", "v_proj"],
+                "target_modules": lora_target_modules or ["q_proj", "v_proj"],
                 "num_layers": hyperparameters.get('num_lora_layers', 8) if hyperparameters else 8,
                 "base_model_name_or_path": model_path
             }
@@ -1495,15 +1165,11 @@ async def export_model(
             return str(output_dir)
         
         elif export_format == "gguf":
-            # Convert to GGUF format
-            logger.info("Converting to GGUF...")
-            logger.warning("GGUF export requires llama.cpp. Please convert manually:")
-            logger.warning(f"  1. Export fused model: {output_path}")
-            logger.warning(f"  2. Use llama.cpp convert.py to convert to GGUF")
-            
-            # For now, return adapter path
-            # TODO: Implement GGUF conversion when llama.cpp is available
-            return adapter_path
+            raise NotImplementedError(
+                "GGUF export is not yet supported. "
+                "Export the fused model and convert manually using llama.cpp: "
+                f"python convert.py {output_path} --outfile model.gguf"
+            )
         
         else:
             raise ValueError(f"Unknown export format: {export_format}")
@@ -1531,16 +1197,19 @@ async def load_model_for_inference(
     try:
         logger.info(f"Loading model for inference: {model_path}")
         
-        # Load base model
-        model, tokenizer = load(model_path, tokenizer_config={"trust_remote_code": True})
+        loop = asyncio.get_running_loop()
         
-        # Load adapters if provided
-        if adapter_path and os.path.exists(adapter_path):
-            logger.info(f"Loading adapters from {adapter_path}")
-            load_adapters(model, adapter_path)
+        def _load():
+            model, tokenizer = load(model_path, tokenizer_config={"trust_remote_code": True})
+            if adapter_path and os.path.exists(adapter_path):
+                logger.info(f"Loading adapters from {adapter_path}")
+                load_adapters(model, adapter_path)
+            return (model, tokenizer)
+        
+        result = await loop.run_in_executor(None, _load)
         
         logger.info("Model loaded successfully for inference")
-        return (model, tokenizer)
+        return result
         
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
@@ -1556,6 +1225,7 @@ async def generate_response(
     max_tokens: int = 512,
     temperature: float = 0.7,
     top_p: float = 0.9,
+    architecture: str = "qwen2",
 ) -> Dict[str, Any]:
     """
     Generate a response from the model with proper tokenizer handling.
@@ -1583,13 +1253,12 @@ async def generate_response(
                 except:
                     pass
         
-        # Get stop strings based on model type
+        # Get stop strings based on architecture
+        from ..core.model_architectures import get_stop_strings
         if hasattr(tokenizer, 'apply_chat_template'):
-            # Modern chat models
-            stop_strings = ["<|end|>", "<|endoftext|>", "<|eot_id|>", "<|im_end|>", "<|assistant|>"]
+            stop_strings = get_stop_strings(architecture)
         else:
-            # Generic stop strings
-            stop_strings = ["\nUser:", "\nHuman:", "<|end|>", "<|endoftext|>"]
+            stop_strings = ["\nUser:", "\nHuman:", "<|end|>"]
         
         # Prepare messages
         messages = [
@@ -1605,21 +1274,36 @@ async def generate_response(
                 add_generation_prompt=True
             )
         else:
-            # Fallback for models without chat template
-            formatted_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            # Fallback for models without chat template - use architecture-specific template
+            from ..core.model_architectures import get_chat_template_fallback
+            fallback_template = get_chat_template_fallback(architecture)
+            if hasattr(tokenizer, 'apply_chat_template') and fallback_template:
+                # Use Jinja-like template substitution for basic cases
+                # Most architecture fallbacks use {% for %} loops which need a real Jinja engine.
+                # As a safe fallback, use the generic format but log the missing template.
+                logger.warning(
+                    f"No chat_template found for {architecture}. "
+                    f"Generation may be suboptimal. Consider using a model with a built-in template."
+                )
+                formatted_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            else:
+                formatted_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
         
         # Generate
         logger.info(f"Generating response with max_tokens={max_tokens}, eos_token_id={eos_token_id}")
         
-        # Note: mlx_lm.generate doesn't support eos_token_id in this version
-        # We'll rely on stop string cleaning instead
-        response_text = generate(
-            model,
-            tokenizer,
-            prompt=formatted_prompt,
-            max_tokens=max_tokens,
-            verbose=False
-        )
+        loop = asyncio.get_running_loop()
+        
+        def _generate():
+            return generate(
+                model,
+                tokenizer,
+                prompt=formatted_prompt,
+                max_tokens=max_tokens,
+                verbose=False
+            )
+        
+        response_text = await loop.run_in_executor(None, _generate)
         
         # Clean up response - remove special tokens and stop strings
         cleaned_response = response_text

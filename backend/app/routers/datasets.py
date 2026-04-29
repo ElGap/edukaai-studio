@@ -17,6 +17,7 @@ from ..core.exceptions import ValidationError, NotFoundError
 from ..core import sanitize_filename, validate_jsonl_format, detect_format, sanitize_dataset_content
 from ..core.logging import get_logger
 from ..models import get_db, Dataset, TrainingRun, generate_uuid
+from ..config import get_settings
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -64,6 +65,7 @@ async def upload_dataset(
     skip_pii_detection: bool = Form(True),   # Default: skip PII if user confirms rights
     db: Session = Depends(get_db)
 ):
+    settings = get_settings()
     """Upload and validate a dataset JSONL file."""
     
     # Validate file type (allow various JSON/text types)
@@ -83,12 +85,18 @@ async def upload_dataset(
     dataset_id = generate_uuid()
     
     if name is None:
-        # Extract name from filename
         base_name = Path(file.filename).stem
         name = sanitize_filename(base_name)
     
-    # Read file content
+    # Check file size before reading into memory
+    max_size_bytes = settings.max_storage_gb * 1024 * 1024 * 1024
+    if file.size and file.size > max_size_bytes:
+        raise ValidationError(f"File too large: {file.size / (1024*1024):.1f}MB exceeds limit of {settings.max_storage_gb}GB")
+    
+    # Read file content (with a safety limit of 500MB)
     content = await file.read()
+    if len(content) > 500 * 1024 * 1024:
+        raise ValidationError("File too large for processing. Maximum 500MB allowed.")
     try:
         content_str = content.decode('utf-8')
     except UnicodeDecodeError:
@@ -216,7 +224,7 @@ async def upload_dataset(
         total_raw_samples=len(valid_samples) + len(errors),
         validation_report=validation_report,
         preview_samples=preview_samples,
-        schema={},  # Extract schema in future enhancement
+        dataset_schema={},
         is_validation_set=is_validation_set
     )
     
@@ -233,7 +241,7 @@ async def upload_dataset(
         total_raw_samples=dataset.total_raw_samples,
         validation_report=dataset.validation_report,
         preview_samples=dataset.preview_samples,
-        dataset_schema=dataset.schema,
+        dataset_schema=dataset.dataset_schema,
         is_validation_set=dataset.is_validation_set,
         created_at=dataset.created_at.isoformat()
     )
@@ -399,7 +407,7 @@ async def upload_validation_dataset(
         total_raw_samples=len(valid_samples) + len(errors),
         validation_report=validation_report,
         preview_samples=preview_samples,
-        schema={},
+        dataset_schema={},
         is_validation_set=True,
         parent_dataset_id=parent_id
     )
@@ -419,7 +427,7 @@ async def upload_validation_dataset(
         total_raw_samples=validation_dataset.total_raw_samples,
         validation_report=validation_dataset.validation_report,
         preview_samples=validation_dataset.preview_samples,
-        dataset_schema=validation_dataset.schema,
+        dataset_schema=validation_dataset.dataset_schema,
         is_validation_set=validation_dataset.is_validation_set,
         created_at=validation_dataset.created_at.isoformat()
     )
@@ -470,7 +478,7 @@ async def get_dataset(dataset_id: str, db: Session = Depends(get_db)):
         total_raw_samples=dataset.total_raw_samples,
         validation_report=dataset.validation_report,
         preview_samples=dataset.preview_samples,
-        dataset_schema=dataset.schema,
+        dataset_schema=dataset.dataset_schema,
         is_validation_set=dataset.is_validation_set,
         created_at=dataset.created_at.isoformat()
     )

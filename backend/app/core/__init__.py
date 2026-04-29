@@ -3,44 +3,10 @@ Core utilities and exception handling.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
-
-class EdukaAIException(Exception):
-    """Base exception for EdukaAI Studio."""
-    
-    def __init__(
-        self, 
-        detail: str, 
-        status_code: int = 500, 
-        error_code: str = "internal_error"
-    ):
-        self.detail = detail
-        self.status_code = status_code
-        self.error_code = error_code
-        super().__init__(self.detail)
-
-
-class ValidationError(EdukaAIException):
-    """Validation error."""
-    
-    def __init__(self, detail: str):
-        super().__init__(detail, status_code=422, error_code="validation_error")
-
-
-class NotFoundError(EdukaAIException):
-    """Resource not found error."""
-    
-    def __init__(self, detail: str = "Resource not found"):
-        super().__init__(detail, status_code=404, error_code="not_found")
-
-
-class ResourceLimitError(EdukaAIException):
-    """Resource limit exceeded error."""
-    
-    def __init__(self, detail: str = "Resource limit exceeded"):
-        super().__init__(detail, status_code=429, error_code="resource_limit")
+from .exceptions import EdukaAIException, ValidationError, NotFoundError, ResourceLimitError, TrainingError, ExportError
 
 
 def sanitize_filename(filename: str) -> str:
@@ -263,29 +229,18 @@ def detect_pii(text: str) -> List[Tuple[str, str]]:
         
         # Government IDs
         'ssn': re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),
-        'ssn_no_dashes': re.compile(r'\b\d{9}\b'),
-        'passport': re.compile(r'\b[A-Z]{1,2}\d{6,9}\b'),
-        'drivers_license': re.compile(r'\b[A-Z]{1,2}\d{6,8}\b'),
         
         # Financial
         'credit_card': re.compile(r'\b(?:\d{4}[- ]?){3}\d{4}\b'),
         'credit_card_amex': re.compile(r'\b3[47]\d{13}\b'),
-        'bank_account': re.compile(r'\b\d{8,17}\b'),
-        'routing_number': re.compile(r'\b\d{9}\b'),
         
         # Authentication
         'api_key': re.compile(r'\b(?:api[_-]?key|token|secret|password)["\']?\s*[:=]\s*["\']?[a-zA-Z0-9_\-]{16,}\b', re.IGNORECASE),
         'jwt_token': re.compile(r'\beyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\b'),
-        'uuid': re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.IGNORECASE),
         'ip_address': re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b'),
-        
-        # Personal
-        'date_of_birth': re.compile(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b'),
-        'zip_code': re.compile(r'\b\d{5}(-\d{4})?\b'),
         
         # Medical
         'medical_record': re.compile(r'\bMR[N]?[\s-]?\d{6,10}\b', re.IGNORECASE),
-        'health_plan': re.compile(r'\b[Hh][Pp][\s-]?\d{8,12}\b'),
     }
     
     findings = []
@@ -374,8 +329,6 @@ def anonymize_pii(text: str, findings: List[Tuple[str, str]]) -> Tuple[str, Dict
             replacement = f"[EMAIL_{idx}@ANON.COM]"
         elif pii_type == 'ssn':
             replacement = f"[SSN_{idx}]"
-        elif pii_type == 'ssn_no_dashes':
-            replacement = f"[SSN_ND_{idx}]"
         elif pii_type == 'credit_card':
             replacement = f"[CC_{idx}]"
         elif pii_type == 'credit_card_amex':
@@ -386,26 +339,10 @@ def anonymize_pii(text: str, findings: List[Tuple[str, str]]) -> Tuple[str, Dict
             replacement = f"[API_KEY_{idx}]"
         elif pii_type == 'jwt_token':
             replacement = f"[JWT_TOKEN_{idx}]"
-        elif pii_type == 'uuid':
-            replacement = f"[UUID_{idx}]"
         elif pii_type == 'ip_address':
             replacement = f"[IP_{idx}]"
-        elif pii_type == 'date_of_birth':
-            replacement = f"[DOB_{idx}]"
-        elif pii_type == 'zip_code':
-            replacement = f"[ZIP_{idx}]"
-        elif pii_type == 'passport':
-            replacement = f"[PASSPORT_{idx}]"
-        elif pii_type == 'drivers_license':
-            replacement = f"[DL_{idx}]"
-        elif pii_type == 'bank_account':
-            replacement = f"[BANK_ACCT_{idx}]"
-        elif pii_type == 'routing_number':
-            replacement = f"[ROUTE_{idx}]"
         elif pii_type == 'medical_record':
             replacement = f"[MRN_{idx}]"
-        elif pii_type == 'health_plan':
-            replacement = f"[HPID_{idx}]"
         else:
             replacement = f"[{pii_type.upper()}_{idx}]"
         
@@ -565,6 +502,6 @@ def sanitize_dataset_content(content: str) -> Tuple[str, List[str], Dict[str, An
 # =============================================================================
 
 
-def format_datetime(dt: datetime) -> str:
+def format_datetime(dt: datetime) -> Optional[str]:
     """Format datetime for JSON serialization."""
     return dt.isoformat() if dt else None

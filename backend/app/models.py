@@ -5,16 +5,17 @@ Database models for EdukaAI Studio.
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+import logging
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey, Integer, 
     String, Text, JSON, create_engine
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker, Session
+from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker, Session
 from sqlalchemy.sql import func
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 
 def generate_uuid():
@@ -37,12 +38,12 @@ class Dataset(Base):
     
     # Validation report
     validation_report = Column(JSON, nullable=False, default=dict)
-    schema = Column(JSON, nullable=True)
+    dataset_schema = Column("schema", JSON, nullable=True)
     preview_samples = Column(JSON, nullable=False, default=list)
     
     # Metadata
-    is_validation_set = Column(Boolean, default=False)
-    parent_dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=True)
+    is_validation_set = Column(Boolean, default=False, index=True)
+    parent_dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=True, index=True)
     
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
@@ -51,7 +52,7 @@ class Dataset(Base):
     training_runs = relationship("TrainingRun", foreign_keys="TrainingRun.training_dataset_id", back_populates="training_dataset")
 
 
-class BaseModel(Base):
+class ModelRegistry(Base):
     """Curated base models registry."""
     __tablename__ = "base_models"
     
@@ -116,7 +117,7 @@ class TrainingRun(Base):
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     name = Column(String(255), nullable=False)
-    status = Column(String(50), nullable=False, default="pending")  # pending, running, paused, completed, failed
+    status = Column(String(50), nullable=False, default="pending", index=True)  # pending, running, paused, completed, failed
     
     # Dataset configuration
     training_dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=False)
@@ -125,7 +126,7 @@ class TrainingRun(Base):
     validation_split_ratio = Column(Float, nullable=True)
     
     # Base model
-    base_model_id = Column(String(36), ForeignKey("base_models.id"), nullable=False)
+    base_model_id = Column(String(36), ForeignKey("base_models.id"), nullable=False, index=True)
     
     # Training configuration
     preset_id = Column(String(36), ForeignKey("training_presets.id"), nullable=True)
@@ -174,11 +175,14 @@ class TrainingRun(Base):
     
     # User notes/description
     description = Column(Text, nullable=True)
-    tags = Column(String(500), nullable=True)  # Comma-separated tags
+    tags = Column(JSON, nullable=True)  # List of tag strings
     notes = Column(Text, nullable=True)  # User notes/thoughts about fine-tuning
     
     # Error tracking
     error_message = Column(Text, nullable=True)
+    
+    # Live status tracking
+    status_message = Column(Text, nullable=True, default="")
     
     # Timestamps
     created_at = Column(DateTime, default=func.now())
@@ -190,7 +194,7 @@ class TrainingRun(Base):
     # Relationships
     training_dataset = relationship("Dataset", foreign_keys=[training_dataset_id], back_populates="training_runs")
     validation_dataset = relationship("Dataset", foreign_keys=[validation_dataset_id])
-    base_model = relationship("BaseModel")
+    base_model = relationship("ModelRegistry")
     preset = relationship("TrainingPreset")
     metrics = relationship("TrainingMetric", back_populates="run", cascade="all, delete-orphan")
 
@@ -242,18 +246,28 @@ def init_db(database_url: str = None, force_recreate: bool = False):
     _engine = create_engine(
         database_url,
         connect_args={"check_same_thread": False} if database_url.startswith("sqlite") else {},
-        echo=False
+        echo=False,
+        pool_pre_ping=True,
     )
     
+    # Enable WAL mode for SQLite for better concurrent read/write performance
+    if database_url.startswith("sqlite"):
+        from sqlalchemy import event
+        
+        @event.listens_for(_engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+    
     if force_recreate:
-        # Drop specific tables that need schema changes
         from sqlalchemy import text
         with _engine.connect() as conn:
             conn.execute(text("DROP TABLE IF EXISTS training_runs"))
             conn.commit()
-            print("Dropped training_runs table for recreation")
+            logging.info("Dropped training_runs table for recreation")
     
-    # Create tables
     Base.metadata.create_all(bind=_engine)
     
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
@@ -262,7 +276,7 @@ def init_db(database_url: str = None, force_recreate: bool = False):
 
 
 def get_db() -> Session:
-    """Get database session."""
+    """Get database session (for FastAPI dependency injection)."""
     if _SessionLocal is None:
         init_db()
     
@@ -273,210 +287,39 @@ def get_db() -> Session:
         db.close()
 
 
+def get_thread_safe_session() -> Session:
+    """Get a database session safe for use in background threads.
+    
+    Use this in training callbacks and WebSocket handlers where
+    FastAPI's dependency injection is not available. Always use
+    in a try/finally block to ensure the session is closed.
+    
+    Example:
+        db = get_thread_safe_session()
+        try:
+            run = db.query(TrainingRun).filter(...)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+    """
+    if _SessionLocal is None:
+        init_db()
+    return _SessionLocal()
+
+
 def seed_initial_data():
     """Seed database with initial data (curated models, presets)."""
     from .config import get_settings
     
-    init_db()
+    if _SessionLocal is None:
+        init_db()
     
     with _SessionLocal() as db:
-        # Check if already seeded
-        existing_models = db.query(BaseModel).count()
-        if existing_models > 0:
+        existing_presets = db.query(TrainingPreset).count()
+        if existing_presets > 0:
             return
-        
-        # Seed curated models with MLX-compatible models
-        # All models are 4-bit quantized from mlx-community for optimal Mac performance
-        curated_models = [
-            # Small models (1-1.5B parameters) - Fast, low memory
-            BaseModel(
-                huggingface_id="mlx-community/Llama-3.2-1B-Instruct-4bit",
-                name="Llama 3.2 1B (4-bit)",
-                architecture="llama",
-                parameter_count=1_000_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.v_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Llama 3.2",
-                    "size_category": "small",
-                    "use_cases": ["Fast prototyping", "Edge deployment", "Low-latency apps"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-                name="Qwen 2.5 0.5B (4-bit)",
-                architecture="qwen2",
-                parameter_count=500_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Qwen 2.5",
-                    "size_category": "tiny",
-                    "use_cases": ["Multilingual tasks", "Resource-constrained environments"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Qwen2.5-1.5B-Instruct-4bit",
-                name="Qwen 2.5 1.5B (4-bit)",
-                architecture="qwen2",
-                parameter_count=1_500_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Qwen 2.5",
-                    "size_category": "small",
-                    "use_cases": ["Multilingual fine-tuning", "Chinese/English tasks"]
-                }
-            ),
-            
-            # Medium models (3-4B parameters) - Balanced
-            BaseModel(
-                huggingface_id="mlx-community/Llama-3.2-3B-Instruct-4bit",
-                name="Llama 3.2 3B (4-bit)",
-                architecture="llama",
-                parameter_count=3_000_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.v_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Llama 3.2",
-                    "size_category": "medium",
-                    "use_cases": ["General-purpose fine-tuning", "Chatbots", "Content generation"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Phi-3-mini-4k-instruct-4bit",
-                name="Phi-3 Mini 4K (4-bit)",
-                architecture="phi3",
-                parameter_count=3_800_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Phi-3",
-                    "size_category": "medium",
-                    "use_cases": ["Coding tasks", "Reasoning", "Instruction following"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Qwen2.5-3B-Instruct-4bit",
-                name="Qwen 2.5 3B (4-bit)",
-                architecture="qwen2",
-                parameter_count=3_000_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Qwen 2.5",
-                    "size_category": "medium",
-                    "use_cases": ["Multilingual applications", "Asian languages", "Translation"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/gemma-2-2b-it-4bit",
-                name="Gemma 2 2B (4-bit)",
-                architecture="gemma",
-                parameter_count=2_000_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Gemma 2",
-                    "size_category": "small",
-                    "use_cases": ["Research", "Educational tasks", "General assistant"]
-                }
-            ),
-            
-            # Large models (7-8B parameters) - High quality
-            BaseModel(
-                huggingface_id="mlx-community/Qwen2.5-7B-Instruct-4bit",
-                name="Qwen 2.5 7B (4-bit)",
-                architecture="qwen2",
-                parameter_count=7_000_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Qwen 2.5",
-                    "size_category": "large",
-                    "use_cases": ["High-quality multilingual", "Professional applications", "Complex reasoning"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
-                name="Llama 3.1 8B (4-bit)",
-                architecture="llama",
-                parameter_count=8_000_000_000,
-                context_length=8192,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 8192,
-                    "model_family": "Llama 3.1",
-                    "size_category": "large",
-                    "use_cases": ["Production applications", "Long-context tasks", "Advanced reasoning"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-                name="Mistral 7B v0.3 (4-bit)",
-                architecture="mistral",
-                parameter_count=7_000_000_000,
-                context_length=32768,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 32768,
-                    "model_family": "Mistral",
-                    "size_category": "large",
-                    "use_cases": ["Long-context applications", "Sliding window attention", "Efficient inference"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/gemma-2-4b-it-4bit",
-                name="Gemma 2 4B (4-bit)",
-                architecture="gemma",
-                parameter_count=4_000_000_000,
-                context_length=4096,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"],
-                    "recommended_max_seq_length": 4096,
-                    "model_family": "Gemma 2",
-                    "size_category": "medium",
-                    "use_cases": ["Research", "Knowledge-intensive tasks", "Google ecosystem"]
-                }
-            ),
-            BaseModel(
-                huggingface_id="mlx-community/Phi-3-small-8k-instruct-4bit",
-                name="Phi-3 Small 8K (4-bit)",
-                architecture="phi3",
-                parameter_count=7_000_000_000,
-                context_length=8192,
-                mlx_config={
-                    "supports_lora": True,
-                    "lora_target_modules": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"],
-                    "recommended_max_seq_length": 8192,
-                    "model_family": "Phi-3",
-                    "size_category": "large",
-                    "use_cases": ["Coding", "Mathematical reasoning", "Logical tasks"]
-                }
-            )
-        ]
-        
-        for model in curated_models:
-            db.add(model)
         
         # Seed training presets
         presets = [

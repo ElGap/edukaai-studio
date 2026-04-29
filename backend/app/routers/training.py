@@ -12,13 +12,13 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from ..core.exceptions import NotFoundError, ValidationError, TrainingError
 from ..core.logging import get_logger
 from ..core import sanitize_dataset_content
-from ..models import get_db, TrainingRun, TrainingPreset, BaseModel as BaseModelDB, Dataset, generate_uuid
+from ..models import get_db, get_thread_safe_session, TrainingRun, TrainingPreset, ModelRegistry, Dataset, generate_uuid
 from ..config import get_config, get_settings
 from ..ml.trainer import training_manager
 
@@ -37,7 +37,6 @@ def formatParameters(parameter_count: int) -> str:
 
 
 def estimate_training_memory(
-    model_params: int,
     lora_rank: int,
     lora_layers: int,
     batch_size: int,
@@ -93,7 +92,8 @@ class BaseModelResponse(BaseModel):
     parameter_count: int
     context_length: int
     mlx_config: Optional[Dict] = None
-    is_custom: bool = False  # True if user-added custom model
+    is_custom: bool = False
+    is_downloaded: bool = False
 
 
 class TrainingPresetResponse(BaseModel):
@@ -142,6 +142,8 @@ class CreateTrainingRunRequest(BaseModel):
     warmup_steps: Optional[int] = Field(default=None, ge=0, le=1000)
     gradient_accumulation_steps: Optional[int] = Field(default=None, ge=1, le=32)
     early_stopping_patience: Optional[int] = Field(default=None, ge=0, le=50)
+    weight_decay: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    max_gradient_norm: Optional[float] = Field(default=None, gt=0)
     gradient_checkpointing: Optional[bool] = None
     num_lora_layers: Optional[int] = Field(default=None, ge=4, le=32)
     prompt_masking: Optional[bool] = None
@@ -184,6 +186,8 @@ class TrainingConfigResponse(BaseModel):
     warmup_steps: int
     gradient_accumulation_steps: int
     early_stopping_patience: int
+    weight_decay: Optional[float] = None
+    max_gradient_norm: Optional[float] = None
     gradient_checkpointing: bool
     num_lora_layers: int
     prompt_masking: bool
@@ -205,6 +209,7 @@ class TrainingRunResponse(BaseModel):
     validation_loss: Optional[float]
     completed_at: Optional[str]
     error_message: Optional[str] = None
+    status_message: Optional[str] = None
     base_model: BaseModelResponse
     created_at: str
     adapter_exported: bool = False
@@ -255,6 +260,8 @@ def build_training_config_response(run) -> TrainingConfigResponse:
         warmup_steps=run.warmup_steps,
         gradient_accumulation_steps=run.gradient_accumulation_steps,
         early_stopping_patience=run.early_stopping_patience,
+        weight_decay=getattr(run, 'weight_decay', None),
+        max_gradient_norm=getattr(run, 'max_gradient_norm', None),
         gradient_checkpointing=run.gradient_checkpointing,
         num_lora_layers=run.num_lora_layers,
         prompt_masking=run.prompt_masking,
@@ -263,7 +270,7 @@ def build_training_config_response(run) -> TrainingConfigResponse:
     )
 
 
-
+class ValidateModelRequest(BaseModel):
     huggingface_id: str = Field(..., min_length=3, max_length=255)
 
 
@@ -272,6 +279,8 @@ class ValidateModelResponse(BaseModel):
     message: str
     model_info: Optional[Dict[str, Any]] = None
     suggested_name: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
 
 # Rebuild models to resolve forward references
 ValidateModelResponse.model_rebuild()
@@ -285,34 +294,39 @@ async def validate_custom_model(
     db: Session = Depends(get_db)
 ):
     """
-    Validate a custom HuggingFace model for MLX compatibility.
-    Checks if the model exists and has MLX-compatible format.
-    Accepts both model IDs (org/model-name) and full URLs (https://huggingface.co/org/model-name).
+    Validate a custom HuggingFace model for MLX fine-tuning compatibility.
+    Uses HuggingFace model_info with expand to extract full metadata:
+    config.json (model_type, max_position_embeddings, num_hidden_layers),
+    safetensors (accurate param count, quantization mix), card_data (license, base_model).
+    Runs a verification checklist before allowing download.
     """
     raw_input = request.huggingface_id.strip()
-    
-    # Handle full HuggingFace URLs - extract model ID
+
     huggingface_id = raw_input
-    if raw_input.startswith('https://huggingface.co/'):
-        # Extract model ID from URL: https://huggingface.co/org/model-name -> org/model-name
-        huggingface_id = raw_input.replace('https://huggingface.co/', '')
-        # Remove trailing slash if present
-        huggingface_id = huggingface_id.rstrip('/')
-        logger.info(f"Extracted model ID '{huggingface_id}' from URL '{raw_input}'")
-    
-    # Validate format (org/model-name or just model-name, max 2 levels)
+    for prefix in ('https://huggingface.co/', 'http://huggingface.co/', 'https://www.huggingface.co/', 'www.huggingface.co/', 'huggingface.co/'):
+        if raw_input.startswith(prefix):
+            huggingface_id = raw_input[len(prefix):].rstrip('/')
+            logger.info(f"Extracted model ID '{huggingface_id}' from URL '{raw_input}'")
+            break
+    if '/' in huggingface_id:
+        parts = huggingface_id.split('/')
+        if len(parts) > 2 and parts[-1] == '':
+            huggingface_id = '/'.join(parts[:2])
+        elif len(parts) > 2:
+            if any(p.startswith('tree') or p.startswith('blob') or p.startswith('resolve') or p.startswith('models') for p in parts[2:]):
+                huggingface_id = '/'.join(parts[:2])
+
     if not re.match(r'^[\w\-\.]+(/[\w\-\.]+)?$', huggingface_id):
         return ValidateModelResponse(
             is_valid=False,
             message="Invalid HuggingFace model ID format. Expected: 'organization/model-name' or 'model-name'",
-            suggested_name=None
+            errors=["Invalid format"]
         )
-    
-    # Check if already in database
-    existing = db.query(BaseModelDB).filter(
-        BaseModelDB.huggingface_id == huggingface_id
+
+    existing = db.query(ModelRegistry).filter(
+        ModelRegistry.huggingface_id == huggingface_id
     ).first()
-    
+
     if existing:
         return ValidateModelResponse(
             is_valid=True,
@@ -322,111 +336,232 @@ async def validate_custom_model(
                 "name": existing.name,
                 "architecture": existing.architecture,
                 "parameter_count": existing.parameter_count,
-                "context_length": existing.context_length
+                "context_length": existing.context_length,
+                "already_exists": True,
             },
-            suggested_name=existing.name
+            suggested_name=existing.name,
+            warnings=["This model is already in your registry"]
         )
-    
-    # Try to fetch model info from HuggingFace
+
     try:
-        from huggingface_hub import model_info, HfApi
-        
-        logger.info(f"Validating custom model: {huggingface_id}")
-        
-        # Get model metadata
-        info = model_info(huggingface_id)
-        
-        # Check for MLX compatibility markers
-        tags = info.tags or []
-        
-        # Check if it's already MLX-formatted (mlx-community, mlx-4bit, etc.)
-        is_mlx_formatted = any(tag in tags for tag in ['mlx', 'mlx-community', '4bit', '8bit'])
-        
-        # Check for common model architectures
-        supported_architectures = [
-            'llama', 'qwen2', 'mistral', 'mixtral', 'phi', 'gemma', 
-            'gemma2', 'qwen2.5', 'llama3', 'phi3'
-        ]
-        
-        architecture = None
-        for arch in supported_architectures:
-            if arch in huggingface_id.lower() or any(arch in tag.lower() for tag in tags):
-                architecture = arch.upper()
-                break
-        
-        if not architecture:
-            architecture = "Unknown"
-        
-        # Extract parameter count from tags or model ID
+        from huggingface_hub import model_info as hf_model_info
+        from ..core.model_architectures import (
+            resolve_architecture, get_arch_config, get_size_category,
+            get_param_count_from_name, detect_architecture_from_id,
+            is_mlx_supported, ARCH_MAP, ARCHITECTURE_CONFIG,
+            FALLBACK_PARAM_COUNT, CONTEXT_LENGTH_CAP, DEFAULT_CONTEXT_LENGTH,
+            DEFAULT_ARCH,
+        )
+
+        settings = get_settings()
+
+        info = hf_model_info(
+            huggingface_id,
+            expand=["config", "safetensors", "cardData"],
+            token=settings.hf_token
+        )
+
+        download_size_gb = 0.0
+        file_siblings = []
+        try:
+            info_files = hf_model_info(
+                huggingface_id,
+                files_metadata=True,
+                token=settings.hf_token
+            )
+            file_siblings = [s.rfilename for s in (info_files.siblings or [])]
+            for s in (info_files.siblings or []):
+                if hasattr(s, 'size') and s.size:
+                    download_size_gb += s.size
+        except Exception:
+            pass
+
+        warnings = []
+        errors = []
+
+        tags = info.tags or getattr(info_files, 'tags', None) or []
+        siblings = [s.rfilename for s in (info.siblings or [])] or file_siblings
+        pipeline_tag = info.pipeline_tag
+        is_gated = info.gated or False
+        library_name = info.library_name
+        downloads = info.downloads or 0
+
+        is_mlx_formatted = (
+            any(t.lower().replace("-", "") in ('mlx', 'mlxcommunity', '4bit', '8bit') for t in tags)
+            or huggingface_id.lower().startswith("mlx-community/")
+        )
+
+        has_safetensors = any(s.endswith(".safetensors") for s in siblings)
+        has_tokenizer = any(s in siblings for s in ["tokenizer.json", "tokenizer.model", "tokenizer_config.json"])
+        has_chat_template = any(s in siblings for s in ["tokenizer_config.json", "chat_template.jinja"])
+
+        raw_model_type = None
+        num_hidden_layers = None
+        context_length = DEFAULT_CONTEXT_LENGTH
+        hidden_size = None
+
+        if info.config:
+            raw_model_type = info.config.get("model_type")
+            ctx = info.config.get("max_position_embeddings")
+            if ctx and ctx > 0:
+                context_length = min(ctx, CONTEXT_LENGTH_CAP)
+            num_hidden_layers = info.config.get("num_hidden_layers")
+            hidden_size = info.config.get("hidden_size")
+
+        if raw_model_type:
+            architecture = resolve_architecture(raw_model_type)
+            if raw_model_type.lower().replace("-", "").replace("_", "") not in ARCH_MAP and architecture == DEFAULT_ARCH:
+                warnings.append(f"Model type '{raw_model_type}' is not in the known architecture map — assuming {DEFAULT_ARCH}-compatible. May need verification.")
+        else:
+            raw = detect_architecture_from_id(huggingface_id, tags)
+            architecture = resolve_architecture(raw)
+            if not raw:
+                warnings.append(f"Could not detect architecture from config or model ID — defaulting to {DEFAULT_ARCH}")
+
         param_count = 0
-        import re as regex
-        
-        # Try to find parameter count in model ID (e.g., "3B", "7B", "1.5B")
-        param_match = regex.search(r'(\d+\.?\d*)[Bb]', huggingface_id)
-        if param_match:
-            param_count = int(float(param_match.group(1)) * 1_000_000_000)
-        
-        # Default parameter counts for common models
+        quantization = None
+
+        if info.safetensors:
+            param_count = info.safetensors.total or 0
+            if info.safetensors.parameters:
+                quantization = dict(info.safetensors.parameters)
+
         if param_count == 0:
-            defaults = {
-                '0.5b': 500_000_000, '0.5B': 500_000_000,
-                '1b': 1_000_000_000, '1B': 1_000_000_000,
-                '1.5b': 1_500_000_000, '1.5B': 1_500_000_000,
-                '2b': 2_000_000_000, '2B': 2_000_000_000,
-                '3b': 3_000_000_000, '3B': 3_000_000_000,
-                '4b': 4_000_000_000, '4B': 4_000_000_000,
-                '7b': 7_000_000_000, '7B': 7_000_000_000,
-                '8b': 8_000_000_000, '8B': 8_000_000_000,
-                '13b': 13_000_000_000, '13B': 13_000_000_000
-            }
-            for key, value in defaults.items():
-                if key in huggingface_id.lower():
-                    param_count = value
-                    break
-        
-        # If still no param count, use default
+            param_count = get_param_count_from_name(huggingface_id)
+
         if param_count == 0:
-            param_count = 3_000_000_000  # Assume 3B if unknown
-        
-        # Extract context length from tags or use defaults
-        context_length = 8192  # Default
-        
-        # Generate suggested name
+            param_count = FALLBACK_PARAM_COUNT
+            warnings.append(f"Parameter count unknown — assuming {FALLBACK_PARAM_COUNT // 1_000_000_000}B. Actual count will be determined during download.")
+
+        base_model = None
+        license_name = None
+        languages = None
+        if info.card_data:
+            base_model = getattr(info.card_data, 'base_model', None) or (info.card_data.get('base_model') if isinstance(info.card_data, dict) else None)
+            license_name = getattr(info.card_data, 'license', None) or (info.card_data.get('license') if isinstance(info.card_data, dict) else None)
+            languages = getattr(info.card_data, 'language', None) or (info.card_data.get('language') if isinstance(info.card_data, dict) else None)
+
+        download_size_gb = round(download_size_gb / (1024 ** 3), 2) if download_size_gb else round(param_count * 0.5 / (1024**3), 2)
+
+        # === VERIFICATION CHECKLIST ===
+        # Hard blocks (errors) — only for models that CANNOT work with MLX
+
+        if pipeline_tag and pipeline_tag not in ("text-generation", "text2text-generation", None):
+            errors.append(f"Model pipeline is '{pipeline_tag}', not text-generation. This model may not be suitable for fine-tuning.")
+
+        if not has_safetensors:
+            errors.append("No safetensors files found. MLX requires safetensors format.")
+
+        if not has_tokenizer:
+            errors.append("No tokenizer files found. A tokenizer is required for training.")
+
+        if is_gated and not settings.hf_token:
+            errors.append("This is a gated model. Set EDUKAAI_HF_TOKEN to access it.")
+
+        if raw_model_type and not is_mlx_supported(raw_model_type):
+            arch_config_raw = get_arch_config(architecture)
+            mlx_module = arch_config_raw.get("mlx_module", architecture)
+            errors.append(
+                f"Model type '{raw_model_type}' maps to MLX module '{mlx_module}' which is not available. "
+                f"This model architecture is not supported by your MLX installation."
+            )
+
+        # Soft warnings — model works but user should be aware
+
+        arch_config = get_arch_config(architecture)
+
+        if not arch_config.get("is_supported", True):
+            warnings.append(
+                f"Architecture '{architecture}' is supported by MLX but has not been fully tested "
+                f"for LoRA fine-tuning in EdukaAI Studio. Training may produce suboptimal results."
+            )
+
+        if arch_config.get("is_moe", False):
+            warnings.append(
+                "This is a Mixture-of-Experts model. LoRA will target attention layers only, "
+                "not individual expert MLPs. This is safe but may limit fine-tuning effectiveness."
+            )
+
+        min_ram = arch_config.get("min_ram_gb", 8)
+        try:
+            import subprocess
+            ram_bytes = int(subprocess.run(
+                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
+            ).stdout.strip())
+            ram_gb = ram_bytes / (1024 ** 3)
+            if ram_gb < min_ram:
+                warnings.append(
+                    f"This model requires at least {min_ram}GB RAM for training. "
+                    f"Your Mac has {ram_gb:.0f}GB."
+                )
+        except Exception:
+            pass
+
+        if not has_chat_template:
+            warnings.append("No chat template found — will use architecture-specific fallback for inference.")
+
+        if not is_mlx_formatted:
+            warnings.append("This model doesn't appear to be MLX-formatted. Consider using a model from mlx-community for best results on Apple Silicon.")
+
+        is_valid = len(errors) == 0
+
         parts = huggingface_id.split('/')
         base_name = parts[-1] if len(parts) > 1 else huggingface_id
         suggested_name = base_name.replace('-', ' ').replace('_', ' ').title()
-        
-        # Build response
+
+        size_cat = get_size_category(param_count)
+
         model_info_dict = {
             "huggingface_id": huggingface_id,
             "architecture": architecture,
+            "raw_model_type": raw_model_type,
             "parameter_count": param_count,
             "context_length": context_length,
+            "num_hidden_layers": num_hidden_layers,
+            "hidden_size": hidden_size,
+            "quantization": quantization,
             "is_mlx_formatted": is_mlx_formatted,
-            "tags": tags[:10]  # First 10 tags
+            "has_safetensors": has_safetensors,
+            "has_tokenizer": has_tokenizer,
+            "has_chat_template": has_chat_template,
+            "is_gated": is_gated,
+            "base_model": base_model,
+            "license": license_name,
+            "languages": languages,
+            "pipeline_tag": pipeline_tag,
+            "library_name": library_name,
+            "downloads": downloads,
+            "tags": tags[:10],
+            "estimated_download_size_gb": download_size_gb,
+            "size_category": size_cat,
+            "lora_target_modules": arch_config["lora_keys"],
+            "stop_strings": arch_config["stop_strings"],
+            "eos_token": arch_config["eos_token"],
+            "is_moe": arch_config.get("is_moe", False),
+            "is_supported": arch_config.get("is_supported", True),
+            "min_ram_gb": arch_config.get("min_ram_gb", 8),
         }
-        
-        if is_mlx_formatted:
-            return ValidateModelResponse(
-                is_valid=True,
-                message=f"Model appears MLX-compatible: {huggingface_id}. Architecture: {architecture}. Estimated parameters: {param_count/1e9:.1f}B",
-                model_info=model_info_dict,
-                suggested_name=suggested_name
-            )
+
+        if is_valid:
+            msg = f"Model verified: {huggingface_id}. Architecture: {architecture}, ~{param_count/1e9:.1f}B params, context: {context_length}"
         else:
-            return ValidateModelResponse(
-                is_valid=True,
-                message=f"Model found: {huggingface_id}. Note: This doesn't appear to be MLX-formatted. Consider using a model from mlx-community for best results. Architecture detected: {architecture}. Estimated parameters: {param_count/1e9:.1f}B",
-                model_info=model_info_dict,
-                suggested_name=suggested_name
-            )
-            
+            msg = f"Model not compatible: {huggingface_id}. Issues: {'; '.join(errors)}"
+
+        return ValidateModelResponse(
+            is_valid=is_valid,
+            message=msg,
+            model_info=model_info_dict,
+            suggested_name=suggested_name,
+            warnings=warnings,
+            errors=errors
+        )
+
     except Exception as e:
         logger.error(f"Error validating model {huggingface_id}: {e}")
         return ValidateModelResponse(
             is_valid=False,
-            message=f"Could not validate model '{huggingface_id}'. Error: {str(e)}. Please check the model ID and ensure it's publicly available on HuggingFace.",
-            suggested_name=None
+            message=f"Could not validate model '{huggingface_id}': {str(e)}",
+            errors=[f"HuggingFace API error: {str(e)}"]
         )
 
 
@@ -437,20 +572,23 @@ async def add_custom_model(
 ):
     """
     Add a custom model to the database after validation.
+    Stores full HuggingFace metadata in mlx_config for fine-tuning capability.
     """
-    # First validate
     validation = await validate_custom_model(request, db)
-    
+
     if not validation.is_valid:
         raise ValidationError(validation.message)
-    
+
     huggingface_id = request.huggingface_id.strip()
-    
-    # Check if already exists
-    existing = db.query(BaseModelDB).filter(
-        BaseModelDB.huggingface_id == huggingface_id
+    for prefix in ('https://huggingface.co/', 'http://huggingface.co/', 'https://www.huggingface.co/', 'www.huggingface.co/', 'huggingface.co/'):
+        if huggingface_id.startswith(prefix):
+            huggingface_id = huggingface_id[len(prefix):].rstrip('/')
+            break
+
+    existing = db.query(ModelRegistry).filter(
+        ModelRegistry.huggingface_id == huggingface_id
     ).first()
-    
+
     if existing:
         return BaseModelResponse(
             id=existing.id,
@@ -466,33 +604,66 @@ async def add_custom_model(
             },
             is_custom=not existing.is_curated
         )
-    
-    # Create new model entry
+
+    from ..core.model_architectures import resolve_architecture, get_arch_config, get_size_category, FALLBACK_PARAM_COUNT, DEFAULT_CONTEXT_LENGTH, DEFAULT_ARCH
+
     info = validation.model_info
     model_id = generate_uuid()
-    
-    model = BaseModelDB(
+
+    raw_arch = info.get("architecture", DEFAULT_ARCH)
+    architecture = resolve_architecture(raw_arch)
+    arch_config = get_arch_config(architecture)
+    param_count = info.get("parameter_count", FALLBACK_PARAM_COUNT)
+    size_cat = get_size_category(param_count)
+    context_length = info.get("context_length", DEFAULT_CONTEXT_LENGTH)
+
+    model = ModelRegistry(
         id=model_id,
         huggingface_id=huggingface_id,
         name=validation.suggested_name or huggingface_id,
-        architecture=info.get("architecture", "Unknown"),
-        parameter_count=info.get("parameter_count", 3_000_000_000),
-        context_length=info.get("context_length", 8192),
+        architecture=architecture,
+        parameter_count=param_count,
+        context_length=context_length,
         is_active=True,
-        is_curated=False,  # Mark as custom
+        is_curated=False,
         mlx_config={
             "is_custom": True,
-            "validation_info": validation.model_info,
-            "added_at": datetime.now().isoformat()
+            "supports_lora": True,
+            "lora_target_modules": arch_config["lora_keys"],
+            "recommended_max_seq_length": context_length,
+            "model_family": architecture,
+            "size_category": size_cat,
+            "stop_strings": arch_config["stop_strings"],
+            "eos_token": arch_config["eos_token"],
+            "chat_template_fallback": arch_config["chat_template_fallback"],
+            "num_hidden_layers": info.get("num_hidden_layers"),
+            "hidden_size": info.get("hidden_size"),
+            "quantization": info.get("quantization"),
+            "is_mlx_formatted": info.get("is_mlx_formatted", False),
+            "has_chat_template": info.get("has_chat_template", False),
+            "is_gated": info.get("is_gated", False),
+            "is_moe": info.get("is_moe", arch_config.get("is_moe", False)),
+            "is_supported": info.get("is_supported", arch_config.get("is_supported", True)),
+            "min_ram_gb": info.get("min_ram_gb", arch_config.get("min_ram_gb", 8)),
+            "base_model": info.get("base_model"),
+            "license": info.get("license"),
+            "languages": info.get("languages"),
+            "downloads": info.get("downloads", 0),
+            "estimated_download_size_gb": info.get("estimated_download_size_gb", 0),
+            "validation_warnings": validation.warnings,
+            "raw_model_type": info.get("raw_model_type"),
+            "pipeline_tag": info.get("pipeline_tag"),
+            "library_name": info.get("library_name"),
+            "added_at": datetime.now().isoformat(),
         }
     )
-    
+
     db.add(model)
     db.commit()
     db.refresh(model)
-    
+
     logger.info(f"Added custom model: {huggingface_id} (ID: {model_id})")
-    
+
     return BaseModelResponse(
         id=model.id,
         huggingface_id=model.huggingface_id,
@@ -505,28 +676,67 @@ async def add_custom_model(
             "is_curated": model.is_curated,
             "is_custom": not model.is_curated
         },
-        is_custom=True  # Mark as custom
+        is_custom=True
     )
+
+
+@router.get("/base-models/{model_id}/recommended-config")
+async def get_recommended_config(model_id: str, db: Session = Depends(get_db)):
+    """Get architecture-aware recommended training config for a model."""
+    from ..core.model_architectures import get_arch_config, get_size_category
+    
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise NotFoundError(f"Model {model_id} not found")
+    
+    architecture = model.architecture or "qwen2"
+    arch_config = get_arch_config(architecture)
+    size_cat = get_size_category(model.parameter_count or 3_000_000_000)
+    
+    preset = arch_config.get("recommended_presets", {}).get(size_cat)
+    if not preset:
+        for cat in ["small", "medium", "tiny"]:
+            preset = arch_config.get("recommended_presets", {}).get(cat)
+            if preset:
+                break
+    
+    if not preset:
+        preset = {"lora_rank": 8, "lora_layers": 16, "learning_rate": 5e-5, "batch_size": 4}
+    
+    return {
+        "model_id": model_id,
+        "architecture": architecture,
+        "size_category": size_cat,
+        "context_length": model.context_length or 4096,
+        "recommended": {
+            "lora_rank": preset.get("lora_rank", 8),
+            "num_lora_layers": preset.get("lora_layers", 16),
+            "learning_rate": preset.get("learning_rate", 5e-5),
+            "batch_size": preset.get("batch_size", 4),
+            "max_seq_length": min(model.context_length or 4096, 4096),
+            "gradient_checkpointing": preset.get("gradient_checkpointing", False),
+        },
+        "lora_target_modules": arch_config.get("lora_keys", []),
+    }
 
 
 @router.get("/base-models", response_model=List[BaseModelResponse])
 async def list_base_models(db: Session = Depends(get_db)):
-    """List all base models (curated + custom)."""
-    # Get curated models first
-    curated_models = db.query(BaseModelDB).filter(
-        BaseModelDB.is_active == True,
-        BaseModelDB.is_curated == True
-    ).order_by(BaseModelDB.parameter_count).all()
-    
-    # Get custom models (added by users)
-    custom_models = db.query(BaseModelDB).filter(
-        BaseModelDB.is_active == True,
-        BaseModelDB.is_curated == False
-    ).order_by(BaseModelDB.created_at.desc()).all()
-    
-    # Combine: curated first, then custom
-    all_models = curated_models + custom_models
-    
+    """List all active base models."""
+    import asyncio
+    from ..core.model_architectures import _is_model_complete_sync
+
+    models = db.query(ModelRegistry).filter(
+        ModelRegistry.is_active == True
+    ).order_by(ModelRegistry.parameter_count).all()
+
+    # Check download status in parallel to avoid blocking on disk I/O
+    async def _check_one(m):
+        is_downloaded = await asyncio.to_thread(_is_model_complete_sync, m.huggingface_id)
+        return m, is_downloaded
+
+    checked = await asyncio.gather(*[_check_one(m) for m in models])
+
     return [
         BaseModelResponse(
             id=m.id,
@@ -540,9 +750,10 @@ async def list_base_models(db: Session = Depends(get_db)):
                 "is_curated": m.is_curated,
                 "is_custom": not m.is_curated
             },
-            is_custom=not m.is_curated
+            is_custom=not m.is_curated,
+            is_downloaded=is_downloaded,
         )
-        for m in all_models
+        for m, is_downloaded in checked
     ]
 
 
@@ -556,7 +767,7 @@ async def delete_custom_model(
     Only custom models (not curated) can be deleted.
     Cannot delete models that are in use by active or pending training runs.
     """
-    model = db.query(BaseModelDB).filter(BaseModelDB.id == model_id).first()
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     
     if not model:
         raise NotFoundError(f"Model {model_id} not found")
@@ -652,9 +863,15 @@ async def create_training_run(
         raise NotFoundError(f"Training dataset {request.training_dataset_id} not found")
     
     # Validate base model exists
-    base_model = db.query(BaseModelDB).filter(BaseModelDB.id == request.base_model_id).first()
+    base_model = db.query(ModelRegistry).filter(ModelRegistry.id == request.base_model_id).first()
     if not base_model:
         raise NotFoundError(f"Base model {request.base_model_id} not found")
+    
+    if request.max_seq_length > (base_model.context_length or 4096):
+        raise ValidationError(
+            f"max_seq_length ({request.max_seq_length}) exceeds model context length "
+            f"({base_model.context_length or 4096})"
+        )
     
     # Validate preset exists
     preset = db.query(TrainingPreset).filter(TrainingPreset.id == request.preset_id).first()
@@ -771,20 +988,24 @@ async def create_training_run(
             "enable_pii_detection": request.enable_pii_detection or False
         },
         "hyperparameters": {
-            "steps": request.steps or preset.steps,
-            "learning_rate": request.learning_rate or preset.learning_rate,
-            "lora_rank": request.lora_rank or preset.lora_rank,
-            "lora_alpha": request.lora_alpha or preset.lora_alpha,
-            "lora_dropout": request.lora_dropout or preset.lora_dropout,
-            "batch_size": request.batch_size or preset.batch_size,
-            "warmup_steps": request.warmup_steps or preset.warmup_steps,
-            "gradient_accumulation_steps": request.gradient_accumulation_steps or preset.gradient_accumulation_steps,
-            "early_stopping_patience": request.early_stopping_patience or preset.early_stopping_patience,
+            "steps": request.steps if request.steps is not None else preset.steps,
+            "learning_rate": request.learning_rate if request.learning_rate is not None else preset.learning_rate,
+            "lora_rank": request.lora_rank if request.lora_rank is not None else preset.lora_rank,
+            "lora_alpha": request.lora_alpha if request.lora_alpha is not None else preset.lora_alpha,
+            "lora_dropout": request.lora_dropout if request.lora_dropout is not None else preset.lora_dropout,
+            "batch_size": request.batch_size if request.batch_size is not None else preset.batch_size,
+            "warmup_steps": request.warmup_steps if request.warmup_steps is not None else preset.warmup_steps,
+            "gradient_accumulation_steps": request.gradient_accumulation_steps if request.gradient_accumulation_steps is not None else preset.gradient_accumulation_steps,
+            "early_stopping_patience": request.early_stopping_patience if request.early_stopping_patience is not None else preset.early_stopping_patience,
+            "weight_decay": request.weight_decay,
+            "max_gradient_norm": request.max_gradient_norm,
             "max_seq_length": request.max_seq_length,
             "gradient_checkpointing": request.gradient_checkpointing if request.gradient_checkpointing is not None else preset.gradient_checkpointing,
             "num_lora_layers": request.num_lora_layers or preset.num_lora_layers,
             "prompt_masking": request.prompt_masking if request.prompt_masking is not None else preset.prompt_masking,
-            "validation_split_percent": validation_split_percent
+            "validation_split_percent": validation_split_percent,
+            "architecture": base_model.architecture or "qwen2",
+            "lora_target_modules": (base_model.mlx_config or {}).get("lora_target_modules")
         },
         "resource_limits": {
             "cpu_cores": request.cpu_cores_limit,
@@ -810,31 +1031,33 @@ async def create_training_run(
         # Auto-generate description with key training details
         description=f"Fine-tuned {base_model.name} ({formatParameters(base_model.parameter_count)}) "
                    f"on {dataset.num_samples:,} samples from '{dataset.name}'. "
-                   f"LoRA rank {request.lora_rank or preset.lora_rank}, {request.steps or preset.steps} steps. "
+                   f"LoRA rank {request.lora_rank if request.lora_rank is not None else preset.lora_rank}, {request.steps if request.steps is not None else preset.steps} steps. "
                    f"Base model: {base_model.huggingface_id}",
         
         # Hyperparameters
-        steps=request.steps or preset.steps,
-        learning_rate=request.learning_rate or preset.learning_rate,
-        lora_rank=request.lora_rank or preset.lora_rank,
-        lora_alpha=request.lora_alpha or preset.lora_alpha,
-        lora_dropout=request.lora_dropout or preset.lora_dropout,
-        batch_size=request.batch_size or preset.batch_size,
-        warmup_steps=request.warmup_steps or preset.warmup_steps,
-        gradient_accumulation_steps=request.gradient_accumulation_steps or preset.gradient_accumulation_steps,
-        early_stopping_patience=request.early_stopping_patience or preset.early_stopping_patience,
+        steps=request.steps if request.steps is not None else preset.steps,
+        learning_rate=request.learning_rate if request.learning_rate is not None else preset.learning_rate,
+        lora_rank=request.lora_rank if request.lora_rank is not None else preset.lora_rank,
+        lora_alpha=request.lora_alpha if request.lora_alpha is not None else preset.lora_alpha,
+        lora_dropout=request.lora_dropout if request.lora_dropout is not None else preset.lora_dropout,
+        batch_size=request.batch_size if request.batch_size is not None else preset.batch_size,
+        warmup_steps=request.warmup_steps if request.warmup_steps is not None else preset.warmup_steps,
+        gradient_accumulation_steps=request.gradient_accumulation_steps if request.gradient_accumulation_steps is not None else preset.gradient_accumulation_steps,
+        early_stopping_patience=request.early_stopping_patience if request.early_stopping_patience is not None else preset.early_stopping_patience,
+        weight_decay=request.weight_decay,
+        max_gradient_norm=request.max_gradient_norm,
         max_seq_length=request.max_seq_length,
         gradient_checkpointing=request.gradient_checkpointing if request.gradient_checkpointing is not None else preset.gradient_checkpointing,
-        num_lora_layers=request.num_lora_layers or preset.num_lora_layers,
+        num_lora_layers=request.num_lora_layers if request.num_lora_layers is not None else preset.num_lora_layers,
         prompt_masking=request.prompt_masking if request.prompt_masking is not None else preset.prompt_masking,
-        validation_split_percent=validation_split_percent or 10,
+        validation_split_percent=validation_split_percent if validation_split_percent is not None else request.validation_split_percent,
         
         # Resource limits
         cpu_cores_limit=request.cpu_cores_limit,
         gpu_memory_limit_gb=request.gpu_memory_limit_gb,
         ram_limit_gb=request.ram_limit_gb,
         
-        total_steps=request.steps or preset.steps,
+        total_steps=request.steps if request.steps is not None else preset.steps,
         storage_path=storage_path
     )
     
@@ -855,6 +1078,7 @@ async def create_training_run(
         validation_loss=run.validation_loss,
         completed_at=run.completed_at.isoformat() if run.completed_at else None,
         error_message=run.error_message,
+        status_message=run.status_message or "",
         adapter_exported=run.adapter_exported,
         fused_exported=run.fused_exported,
         gguf_exported=run.gguf_exported,
@@ -901,6 +1125,7 @@ async def list_training_runs(
             validation_loss=r.validation_loss,
             completed_at=r.completed_at.isoformat() if r.completed_at else None,
             error_message=r.error_message,
+            status_message=r.status_message or "",
             adapter_exported=r.adapter_exported,
             fused_exported=r.fused_exported,
             gguf_exported=r.gguf_exported,
@@ -943,6 +1168,7 @@ async def get_training_run(run_id: str, db: Session = Depends(get_db)):
         validation_loss=run.validation_loss,
         completed_at=run.completed_at.isoformat() if run.completed_at else None,
         error_message=run.error_message,
+        status_message=run.status_message or "",
         adapter_exported=run.adapter_exported,
         fused_exported=run.fused_exported,
         gguf_exported=run.gguf_exported,
@@ -1054,13 +1280,22 @@ async def delete_training_run(run_id: str, db: Session = Depends(get_db)):
     if not run:
         raise NotFoundError(f"Training run {run_id} not found")
     
+    if run.status in ("running", "paused"):
+        raise ValidationError(f"Cannot delete a {run.status} training run. Stop it first.")
+    
+    # Stop any active training process
+    process = training_manager.get_process(run_id)
+    if process:
+        training_manager.stop_training(run_id)
+        logger.info(f"Stopped active training process for run {run_id} before deletion")
+    
     # Delete storage directory
     try:
         if os.path.exists(run.storage_path):
             shutil.rmtree(run.storage_path)
     except Exception as e:
         # Log error but continue with DB deletion
-        print(f"Warning: Failed to delete storage for run {run_id}: {e}")
+        logger.warning(f"Failed to delete storage for run {run_id}: {e}")
     
     # Delete database record
     db.delete(run)
@@ -1132,6 +1367,7 @@ async def update_training_run(
         validation_loss=run.validation_loss,
         completed_at=run.completed_at.isoformat() if run.completed_at else None,
         error_message=run.error_message,
+        status_message=run.status_message or "",
         adapter_exported=run.adapter_exported,
         fused_exported=run.fused_exported,
         gguf_exported=run.gguf_exported,
@@ -1186,7 +1422,6 @@ async def start_training(
     # SECURITY CHECK #2: Resource limit validation
     # Estimate memory requirements and validate against safe limits
     estimated_memory_gb = estimate_training_memory(
-        model_params=saved_config["base_model"].get("parameter_count", 1_000_000_000),
         lora_rank=run.lora_rank,
         lora_layers=run.num_lora_layers,
         batch_size=run.batch_size,
@@ -1215,12 +1450,16 @@ async def start_training(
     # Create training config
     # Extract model ID from URL if needed (handle https://huggingface.co/org/model format)
     raw_model_id = saved_config["base_model"]["huggingface_id"]
-    if raw_model_id.startswith('https://huggingface.co/'):
-        model_id = raw_model_id.replace('https://huggingface.co/', '').rstrip('/')
-        logger.info(f"Extracted model ID '{model_id}' from URL '{raw_model_id}'")
+    model_id = raw_model_id
+    for prefix in ('https://huggingface.co/', 'http://huggingface.co/', 'https://www.huggingface.co/', 'www.huggingface.co/', 'huggingface.co/'):
+        if raw_model_id.startswith(prefix):
+            model_id = raw_model_id[len(prefix):].rstrip('/')
+            logger.info(f"Extracted model ID '{model_id}' from URL '{raw_model_id}'")
+            break
     else:
         model_id = raw_model_id
     
+    hp = saved_config.get("hyperparameters", {})
     training_config = TrainingConfig(
         model_id=model_id,
         data_path=saved_config["dataset"]["training_path"],
@@ -1235,6 +1474,10 @@ async def start_training(
         warmup_steps=run.warmup_steps,
         gradient_accumulation_steps=run.gradient_accumulation_steps,
         early_stopping_patience=run.early_stopping_patience,
+        weight_decay=run.weight_decay,
+        max_gradient_norm=run.max_gradient_norm,
+        architecture=hp.get("architecture", run.base_model.architecture if run.base_model else "qwen2"),
+        lora_target_modules=hp.get("lora_target_modules"),
         gradient_checkpointing=run.gradient_checkpointing,
         num_lora_layers=run.num_lora_layers,
         prompt_masking=run.prompt_masking,
@@ -1246,8 +1489,8 @@ async def start_training(
     # Callbacks for updating database (each creates its own session)
     def on_step_complete(data):
         """Update run progress in database and save step metrics."""
-        from ..models import get_db, TrainingMetric
-        db = next(get_db())
+        from ..models import get_thread_safe_session, TrainingMetric
+        db = get_thread_safe_session()
         try:
             run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
             if run:
@@ -1281,8 +1524,8 @@ async def start_training(
     
     def on_training_complete():
         """Mark run as completed."""
-        from ..models import get_db
-        db = next(get_db())
+        from ..models import get_thread_safe_session
+        db = get_thread_safe_session()
         try:
             run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
             if run:
@@ -1300,16 +1543,21 @@ async def start_training(
             db.close()
     
     def on_error(error_msg):
-        """Mark run as failed."""
-        from ..models import get_db
-        db = next(get_db())
+        """Mark run as failed or stopped."""
+        from ..models import get_thread_safe_session
+        db = get_thread_safe_session()
         try:
             run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
             if run:
-                run.status = "failed"
-                run.error_message = error_msg
+                if error_msg.startswith("stopped:"):
+                    run.status = "stopped"
+                    run.error_message = error_msg[len("stopped:"):]
+                else:
+                    run.status = "failed"
+                    run.error_message = error_msg
+                run.completed_at = datetime.now()
                 db.commit()
-                logger.error(f"Training run {run_id} marked as failed: {error_msg}")
+                logger.info(f"Training run {run_id} marked as {run.status}: {error_msg}")
                 training_manager.cleanup(run_id)
         except Exception as e:
             logger.error(f"Error in on_error: {e}", exc_info=True)
@@ -1318,8 +1566,17 @@ async def start_training(
     
     def on_status_change(status: str, message: str):
         """Handle status changes like downloading, loading_model, etc."""
-        # Just log it - the WebSocket will pick up status changes via get_stats()
         logger.info(f"Training {run_id} status changed: {status} - {message}")
+        try:
+            run_obj = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+            if run_obj:
+                run_obj.status = status
+                run_obj.status_message = message or ""
+                if status == "running" and not run_obj.started_at:
+                    run_obj.started_at = datetime.now()
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to persist status change for {run_id}: {e}")
     
     # Start training
     try:
@@ -1386,12 +1643,16 @@ async def stop_training(run_id: str, db: Session = Depends(get_db)):
     if not run:
         raise NotFoundError(f"Training run {run_id} not found")
     
-    if run.status not in ["running", "paused"]:
+    if run.status not in ["running", "paused", "downloading", "loading_model"]:
         raise ValidationError(f"Cannot stop run with status: {run.status}")
     
     training_manager.stop_training(run_id)
     
-    # Note: The process will update the status to "stopped" via callback
+    run.status = "stopped"
+    run.status_message = "Stopped by user"
+    run.completed_at = datetime.now()
+    db.commit()
+    
     return {"message": "Training stop requested", "run_id": run_id}
 
 
@@ -1428,7 +1689,6 @@ async def training_websocket(websocket: WebSocket, run_id: str):
     
     try:
         # Wait a moment for training to initialize
-        import asyncio
         await asyncio.sleep(0.3)
         
         # Send initial connection confirmation with current status
@@ -1451,6 +1711,7 @@ async def training_websocket(websocket: WebSocket, run_id: str):
         
         last_sent_step = -1
         last_status = None
+        last_sent_message = ""
         update_count = 0
         
         while True:
@@ -1494,12 +1755,14 @@ async def training_websocket(websocket: WebSocket, run_id: str):
                 should_send = (
                     stats["current_step"] != last_sent_step or
                     stats["status"] != last_status or
-                    update_count % 4 == 0  # Every 2 seconds (0.5s * 4)
+                    stats.get("status_message", "") != last_sent_message or
+                    update_count % 4 == 0
                 )
                 
                 if should_send:
                     last_sent_step = stats["current_step"]
                     last_status = stats["status"]
+                    last_sent_message = stats.get("status_message", "")
                     
                     try:
                         await websocket.send_json({
@@ -1523,8 +1786,7 @@ async def training_websocket(websocket: WebSocket, run_id: str):
                 logger.info(f"Training process {run_id} no longer active, checking database")
                 
                 # Get final status from database
-                from ..models import get_db, TrainingRun
-                db = next(get_db())
+                db = get_thread_safe_session()
                 try:
                     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
                     if run:
@@ -1574,8 +1836,17 @@ async def training_websocket(websocket: WebSocket, run_id: str):
 
 
 # Export endpoints
+ALLOWED_EXPORT_FORMATS = {"adapter", "fused", "gguf"}
+
 class ExportRequest(BaseModel):
     format: str  # "adapter", "fused", "gguf"
+
+    @field_validator('format')
+    @classmethod
+    def validate_format(cls, v: str) -> str:
+        if v not in ALLOWED_EXPORT_FORMATS:
+            raise ValueError(f"Invalid format. Allowed: {', '.join(sorted(ALLOWED_EXPORT_FORMATS))}")
+        return v
 
 
 def _get_export_info(run: TrainingRun, format: str) -> Optional[Dict]:
@@ -1683,19 +1954,38 @@ async def export_model_endpoint(
     adapter_path = f"{run.storage_path}/adapters.safetensors"
     hyperparameters = config.get("hyperparameters", {})
     
+    # Get architecture-specific LoRA target modules from base model
+    base_model_db = db.query(ModelRegistry).filter(ModelRegistry.id == run.base_model_id).first()
+    lora_target_modules = None
+    if base_model_db and base_model_db.mlx_config:
+        lora_target_modules = base_model_db.mlx_config.get("lora_target_modules")
+    
+    # Resolve base model to local cache path if available
+    from ..core.model_architectures import get_cached_snapshot_path_sync
+    cached_snapshot = get_cached_snapshot_path_sync(base_model_id)
+    model_path = cached_snapshot if cached_snapshot else base_model_id
+    if cached_snapshot:
+        logger.info(f"Using locally cached model for export: {model_path}")
+    else:
+        logger.info(f"Using HuggingFace model ID for export: {model_path}")
+    
     # Determine output path
     export_dir = f"{run.storage_path}/exports/{request.format}"
     os.makedirs(export_dir, exist_ok=True)
     
     try:
         # Run export
-        output_path = await export_model(
-            model_path=base_model_id,
-            adapter_path=adapter_path,
-            export_format=request.format,
-            output_path=export_dir,
-            hyperparameters=hyperparameters
-        )
+        try:
+            output_path = await export_model(
+                model_path=model_path,
+                adapter_path=adapter_path,
+                export_format=request.format,
+                output_path=export_dir,
+                hyperparameters=hyperparameters,
+                lora_target_modules=lora_target_modules
+            )
+        except NotImplementedError as e:
+            raise ExportError(str(e))
         
         # Update export status
         if request.format == "adapter":
@@ -1725,6 +2015,9 @@ async def export_model_endpoint(
         raise TrainingError(f"Export failed: {str(e)}")
 
 
+ALLOWED_EXPORT_FORMATS = {"adapter", "fused", "gguf"}
+
+
 @router.get("/training/runs/{run_id}/exports/{format}/download")
 async def download_export(
     run_id: str,
@@ -1734,9 +2027,16 @@ async def download_export(
     """Download an exported model."""
     from fastapi.responses import FileResponse
     
+    if format not in ALLOWED_EXPORT_FORMATS:
+        raise ValidationError(f"Invalid export format '{format}'. Allowed: {', '.join(sorted(ALLOWED_EXPORT_FORMATS))}")
+    
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise NotFoundError(f"Training run {run_id} not found")
+    
+    export_path = os.path.normpath(f"{run.storage_path}/exports/{format}")
+    if not export_path.startswith(os.path.normpath(run.storage_path)):
+        raise ValidationError("Invalid export path")
     
     export_path = f"{run.storage_path}/exports/{format}"
     
@@ -1847,6 +2147,3 @@ async def get_training_metrics(
         ]
     }
 
-
-# Update imports
-from fastapi import BackgroundTasks

@@ -105,3 +105,6 @@ docs/_templates/
 **/.temp/
 
 AGENTS.md
+
+docs
+!docs/screenshots

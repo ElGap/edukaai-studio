@@ -9,21 +9,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from datetime import datetime
 
-# Enable testing mode (disable localhost-only security)
-os.environ["EDUKAI_ALLOW_REMOTE"] = "true"
-
-# Import the app and models
-import sys
-sys.path.insert(0, '/Users/developer/Projects/studio/backend')
-
-# Force reload of settings module to pick up environment variable
-import importlib
-from app import config
-importlib.reload(config)
-settings = config.get_settings()
+os.environ["EDUKAAI_ALLOW_REMOTE"] = "true"
+os.environ["EDUKAAI_ENV"] = "testing"
 
 from app.main import app
-from app.models import get_db, BaseModel, TrainingRun, Dataset, TrainingPreset, generate_uuid
+from app.models import get_db, ModelRegistry, TrainingRun, Dataset, TrainingPreset, generate_uuid
 from app.routers.training import validate_custom_model, add_custom_model, estimate_training_memory
 from app.core.exceptions import ValidationError
 
@@ -165,55 +155,42 @@ class TestMemoryEstimation:
     """Test the memory estimation function"""
     
     def test_memory_estimation_1b_model(self):
-        """Test memory estimation for 1B model"""
         memory = estimate_training_memory(
-            model_params=1_000_000_000,
             lora_rank=8,
             lora_layers=8,
             batch_size=4,
             seq_length=2048,
             total_params=1_000_000_000
         )
-        
-        # Should be reasonable (not too high, not zero)
         assert memory > 1.0, "Memory should be > 1GB"
         assert memory < 10.0, "Memory should be < 10GB for 1B model"
         
     def test_memory_estimation_7b_model(self):
-        """Test memory estimation for 7B model"""
         memory = estimate_training_memory(
-            model_params=7_000_000_000,
             lora_rank=8,
             lora_layers=8,
             batch_size=4,
             seq_length=2048,
             total_params=7_000_000_000
         )
-        
-        # Should be higher than 1B and reasonable
         assert memory > 2.0, "7B model should need > 2GB"
         assert memory < 10.0, "7B with LoRA should be < 10GB"
         
     def test_memory_with_large_batch(self):
-        """Test that large batch sizes increase memory estimate"""
         memory_small_batch = estimate_training_memory(
-            model_params=3_000_000_000,
             lora_rank=8,
             lora_layers=8,
             batch_size=1,
             seq_length=2048,
             total_params=3_000_000_000
         )
-        
         memory_large_batch = estimate_training_memory(
-            model_params=3_000_000_000,
             lora_rank=8,
             lora_layers=8,
             batch_size=16,
             seq_length=2048,
             total_params=3_000_000_000
         )
-        
         assert memory_large_batch > memory_small_batch, "Large batch should need more memory"
 
 

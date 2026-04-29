@@ -33,8 +33,15 @@
             <div class="animate-spin h-6 w-6 border-2 border-blue-500 border-t-transparent rounded-full mx-auto"></div>
           </div>
           
-          <div v-else-if="baseModels.length === 0" class="text-slate-400 text-center py-4">
-            No models available
+          <div v-else-if="baseModels.length === 0" class="text-center py-8">
+            <p class="text-slate-400 text-lg mb-2">No models added yet</p>
+            <p class="text-slate-500 text-sm mb-4">Add your first model from HuggingFace to get started</p>
+            <button
+              @click="showCustomModelModal = true"
+              class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              Add a Model
+            </button>
           </div>
           
           <div v-else class="border border-slate-700 rounded-lg overflow-hidden">
@@ -74,6 +81,8 @@
                       <div>
                         <h3 class="font-medium text-white text-sm truncate">{{ model.name }}</h3>
                         <p class="text-xs text-slate-500 mt-0.5 truncate">{{ model.huggingface_id }}</p>
+                        <span v-if="model.is_downloaded" class="inline-block mt-1 px-1.5 py-0.5 bg-green-600/20 text-green-400 text-[10px] rounded">Cached</span>
+                        <span v-else class="inline-block mt-1 px-1.5 py-0.5 bg-slate-600/20 text-slate-400 text-[10px] rounded">Not downloaded</span>
                       </div>
                     </td>
                     <td class="px-4 py-3 w-24">
@@ -120,6 +129,8 @@
                         <h3 class="font-medium text-white text-sm truncate">{{ model.name }}</h3>
                         <p class="text-xs text-slate-500 mt-0.5 truncate">{{ model.huggingface_id }}</p>
                         <span class="inline-block mt-1 px-1.5 py-0.5 bg-purple-600/20 text-purple-400 text-[10px] rounded">Custom</span>
+                        <span v-if="model.is_downloaded" class="inline-block mt-1 ml-1 px-1.5 py-0.5 bg-green-600/20 text-green-400 text-[10px] rounded">Cached</span>
+                        <span v-else class="inline-block mt-1 ml-1 px-1.5 py-0.5 bg-slate-600/20 text-slate-400 text-[10px] rounded">Not downloaded</span>
                       </div>
                     </td>
                     <td class="px-4 py-3 w-24">
@@ -196,14 +207,65 @@
                   <span>Validating model...</span>
                 </div>
                 <div v-else-if="customModelValidation.error" class="text-red-400">
-                  ❌ {{ customModelValidation.error }}
+                  <p class="font-medium">Model not compatible</p>
+                  <ul v-if="customModelValidation.errors?.length" class="mt-1 text-xs list-disc list-inside">
+                    <li v-for="err in customModelValidation.errors" :key="err">{{ err }}</li>
+                  </ul>
+                  <p v-else class="text-xs mt-1">{{ customModelValidation.error }}</p>
                 </div>
-                <div v-else-if="customModelValidation.success" class="text-green-400">
-                  ✅ {{ customModelValidation.message }}
-                  <div v-if="customModelValidation.modelInfo" class="mt-2 p-2 bg-slate-900 rounded text-xs text-slate-300">
-                    <p><strong>Architecture:</strong> {{ customModelValidation.modelInfo.architecture }}</p>
-                    <p><strong>Parameters:</strong> {{ (customModelValidation.modelInfo.parameter_count / 1e9).toFixed(1) }}B</p>
-                    <p><strong>MLX Formatted:</strong> {{ customModelValidation.modelInfo.is_mlx_formatted ? 'Yes' : 'No (may need conversion)' }}</p>
+                <div v-else-if="customModelValidation.success" class="space-y-3">
+                  <div class="text-green-400 font-medium">
+                    Model verified
+                  </div>
+                  
+                  <div v-if="customModelValidation.modelInfo" class="p-3 bg-slate-900 rounded-lg text-xs text-slate-300 space-y-2">
+                    <div class="grid grid-cols-2 gap-2">
+                      <div>
+                        <span class="text-slate-500">Architecture</span>
+                        <p class="text-white font-medium">{{ formatArchitecture(customModelValidation.modelInfo.architecture) }}</p>
+                      </div>
+                      <div>
+                        <span class="text-slate-500">Parameters</span>
+                        <p class="text-white font-medium">{{ (customModelValidation.modelInfo.parameter_count / 1e9).toFixed(1) }}B</p>
+                      </div>
+                      <div>
+                        <span class="text-slate-500">Context Length</span>
+                        <p class="text-white font-medium">{{ customModelValidation.modelInfo.context_length?.toLocaleString() || 'Unknown' }}</p>
+                      </div>
+                      <div>
+                        <span class="text-slate-500">Download Size</span>
+                        <p class="text-white font-medium">{{ customModelValidation.modelInfo.estimated_download_size_gb?.toFixed(1) || '?' }} GB</p>
+                      </div>
+                      <div>
+                        <span class="text-slate-500">MLX Format</span>
+                        <p :class="customModelValidation.modelInfo.is_mlx_formatted ? 'text-green-400' : 'text-yellow-400'">
+                          {{ customModelValidation.modelInfo.is_mlx_formatted ? 'Yes' : 'No' }}
+                        </p>
+                      </div>
+                      <div>
+                        <span class="text-slate-500">Chat Template</span>
+                        <p :class="customModelValidation.modelInfo.has_chat_template ? 'text-green-400' : 'text-yellow-400'">
+                          {{ customModelValidation.modelInfo.has_chat_template ? 'Yes' : 'Fallback' }}
+                        </p>
+                      </div>
+                      <div v-if="customModelValidation.modelInfo.license">
+                        <span class="text-slate-500">License</span>
+                        <p class="text-white font-medium">{{ customModelValidation.modelInfo.license }}</p>
+                      </div>
+                      <div v-if="customModelValidation.modelInfo.quantization">
+                        <span class="text-slate-500">Quantization</span>
+                        <p class="text-white font-medium">{{ Object.keys(customModelValidation.modelInfo.quantization).join(', ') }}</p>
+                      </div>
+                    </div>
+                    
+                    <div v-if="customModelValidation.modelInfo.lora_target_modules" class="pt-2 border-t border-slate-700">
+                      <span class="text-slate-500">LoRA targets:</span>
+                      <p class="text-blue-400">{{ customModelValidation.modelInfo.lora_target_modules.join(', ') }}</p>
+                    </div>
+                  </div>
+                  
+                  <div v-if="customModelValidation.warnings?.length" class="p-2 bg-yellow-900/20 border border-yellow-800/50 rounded text-xs space-y-1">
+                    <p v-for="w in customModelValidation.warnings" :key="w" class="text-yellow-400">{{ w }}</p>
                   </div>
                 </div>
               </div>
@@ -772,56 +834,11 @@
         </button>
       </div>
     </div>
-    
-    <!-- Delete Custom Model Confirmation Modal -->
-    <div
-      v-if="showDeleteModelModal"
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      @click="showDeleteModelModal = false"
-    >
-      <div
-        class="bg-slate-900 rounded-xl border border-slate-800 p-6 w-full max-w-md mx-4"
-        @click.stop
-      >
-        <h3 class="text-lg font-semibold text-white mb-4">Delete Custom Model</h3>
-        
-        <p class="text-slate-400 mb-4">
-          Are you sure you want to delete <strong class="text-white">{{ modelToDelete?.name }}</strong>?
-        </p>
-        
-        <div class="bg-slate-800 rounded-lg p-3 mb-4">
-          <p class="text-xs text-slate-400">Model ID:</p>
-          <p class="text-sm text-slate-300">{{ modelToDelete?.huggingface_id }}</p>
-        </div>
-        
-        <p class="text-xs text-slate-500 mb-6">
-          This will remove the model from the list. If the model has been used in training runs, it will be hidden but existing runs will continue to work.
-        </p>
-        
-        <div class="flex justify-end gap-3">
-          <button
-            @click="showDeleteModelModal = false; modelToDelete = null"
-            class="px-4 py-2 text-slate-400 hover:text-white transition-colors"
-            :disabled="isDeletingModel"
-          >
-            Cancel
-          </button>
-          <button
-            @click="deleteModel"
-            :disabled="isDeletingModel"
-            class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-800/50 text-white rounded-lg font-medium transition-colors"
-          >
-            <span v-if="isDeletingModel">Deleting...</span>
-            <span v-else>Delete Model</span>
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTrainingStore } from '@/stores/training'
 import type { BaseModel, TrainingPreset } from '@/stores/training'
@@ -831,6 +848,7 @@ import { useToast } from '@/composables/useToast'
 const router = useRouter()
 const store = useTrainingStore()
 const { error: showError, success: showSuccess } = useToast()
+const wizard = inject<any>('wizard')
 
 // API client
 const api = axios.create({
@@ -856,11 +874,20 @@ const customModelValidation = ref<{
   success: boolean
   error: string
   message: string
+  warnings?: string[]
+  errors?: string[]
   modelInfo?: {
     architecture: string
     parameter_count: number
     context_length: number
     is_mlx_formatted: boolean
+    has_chat_template: boolean
+    has_safetensors: boolean
+    is_gated: boolean
+    quantization: Record<string, number> | null
+    license: string | null
+    estimated_download_size_gb: number
+    lora_target_modules: string[]
     tags: string[]
   }
 } | null>(null)
@@ -913,14 +940,7 @@ const runName = computed(() => {
 })
 
 const canStartTraining = computed(() => {
-  const canStart = !!(selectedBaseModel.value && selectedPreset.value && selectedDataset.value)
-  console.log('canStartTraining check:', { 
-    hasModel: !!selectedBaseModel.value, 
-    hasPreset: !!selectedPreset.value, 
-    hasDataset: !!selectedDataset.value,
-    canStart 
-  })
-  return canStart
+  return !!(selectedBaseModel.value && selectedPreset.value && selectedDataset.value)
 })
 
 const estimatedTime = computed(() => {
@@ -987,10 +1007,25 @@ const estimateMemory = (params: number, modelName: string): number => {
   return Math.ceil(baseMemoryGB + overheadGB)
 }
 
-const selectBaseModel = (model: BaseModel) => {
-  console.log('[MODEL SELECT] User selected model:', model.id, model.name, model.huggingface_id)
+const selectBaseModel = async (model: BaseModel) => {
   selectedBaseModel.value = model
-  showCustomModelModal.value = false  // Close modal if open
+  showCustomModelModal.value = false
+
+  // Fetch architecture-aware recommended config
+  try {
+    const resp = await api.get(`/base-models/${model.id}/recommended-config`)
+    const rec = resp.data.recommended
+    if (rec) {
+      config.value.lora_rank = rec.lora_rank
+      config.value.num_lora_layers = rec.num_lora_layers
+      config.value.learning_rate = rec.learning_rate
+      config.value.batch_size = rec.batch_size
+      config.value.max_seq_length = rec.max_seq_length
+      config.value.gradient_checkpointing = rec.gradient_checkpointing
+    }
+  } catch {
+    // Ignore — keep current defaults
+  }
 }
 
 const confirmDeleteModel = (model: BaseModel) => {
@@ -1054,6 +1089,8 @@ const validateCustomModel = async () => {
       success: data.is_valid,
       error: data.is_valid ? '' : data.message,
       message: data.message,
+      warnings: data.warnings || [],
+      errors: data.errors || [],
       modelInfo: data.model_info
     }
   } catch (error: any) {
@@ -1083,7 +1120,6 @@ const addCustomModel = async () => {
     selectedBaseModel.value = newModel
     
     // Show success
-    const { success: showSuccess } = useToast()
     showSuccess(`Custom model "${newModel.name}" added successfully!`)
     
     // Close modal and reset
@@ -1091,7 +1127,6 @@ const addCustomModel = async () => {
     resetCustomModel()
     
   } catch (error: any) {
-    const { error: showError } = useToast()
     showError(error.response?.data?.detail || 'Failed to add custom model')
   }
 }
@@ -1124,20 +1159,12 @@ const resetToPreset = () => {
 }
 
 const startTraining = async () => {
-  console.log('Start Training clicked')
-  console.log('canStartTraining:', canStartTraining.value)
-  console.log('selectedDataset:', selectedDataset.value)
-  console.log('selectedBaseModel:', selectedBaseModel.value)
-  console.log('selectedPreset:', selectedPreset.value)
-  
   if (!canStartTraining.value) {
-    console.log('Cannot start - missing model or preset')
     showError('Please select a base model and training preset first.')
     return
   }
   
   if (!selectedDataset.value) {
-    console.log('Cannot start - no dataset selected')
     showError('No dataset selected. Please go back and upload a dataset first.')
     return
   }
@@ -1153,7 +1180,7 @@ const startTraining = async () => {
       preset_id: selectedPreset.value!.id,
       validation_split_percent: config.value.validation_split_percent,
       steps: config.value.steps,
-      learning_rate: config.value.learning_rate,
+      learning_rate: Number(config.value.learning_rate),
       lora_rank: config.value.lora_rank,
       lora_alpha: config.value.lora_alpha,
       lora_dropout: config.value.lora_dropout,
@@ -1170,24 +1197,13 @@ const startTraining = async () => {
       ram_limit_gb: resourceLimits.value.ram_gb
     }
     
-    console.log('[TRAINING START] Creating training run with config:', JSON.stringify(runData, null, 2))
-    console.log('[TRAINING START] Base model being sent:', runData.base_model_id)
-    console.log('[TRAINING START] PII Detection enabled:', enablePiiDetection.value)
-    
-    // Add PII detection flag
     const requestData = {
       ...runData,
       enable_pii_detection: enablePiiDetection.value
     }
     
-    // Call API to create training run
     const response = await api.post('/training/runs', requestData)
-    
     const result = response.data
-    console.log('Training run created, full response data:', JSON.stringify(result, null, 2))
-    console.log('Run ID from result:', result?.id)
-    console.log('Run name from result:', result?.name)
-    console.log('Run status from result:', result?.status)
     
     if (!result || !result.id) {
       throw new Error('Invalid response from server: missing run ID')
@@ -1195,36 +1211,12 @@ const startTraining = async () => {
     
     // Store the run ID and add complete run data to store
     store.setActiveRun(result.id)
-    
-    // Add the complete run data from API response to trainingRuns using store action
     store.addTrainingRun(result)
     
-    console.log('Active run set in store:', store.activeRunId)
-    console.log('Training run added to store, total runs:', store.trainingRuns.length)
-    
     showSuccess(`Training run "${result.name}" created! Starting training...`)
-    
-    // Navigate immediately to training page
-    console.log('About to navigate to training page...')
-    
-    // Use both router and window.location as fallbacks
-    const navigateToTraining = async () => {
-      try {
-        await router.push({ name: 'training' })
-        console.log('Navigation successful via router')
-      } catch (err) {
-        console.error('Router navigation failed:', err)
-        console.log('Falling back to window.location...')
-        window.location.assign('/training')
-      }
-    }
-    
-    // Small delay then navigate
-    setTimeout(() => {
-      navigateToTraining()
-    }, 50)
+
+    wizard.goToStep(3, { activeRunId: result.id })
   } catch (error: any) {
-    console.error('Failed to create training run:', error)
     const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
     showError('Failed to start training: ' + errorMessage)
   } finally {
@@ -1250,19 +1242,14 @@ onMounted(async () => {
     
     // Auto-select first model and preset only if none selected
     if (baseModels.value.length > 0 && !selectedBaseModel.value) {
-      console.log('[AUTO SELECT] No model selected, auto-selecting first:', baseModels.value[0].id, baseModels.value[0].name)
       selectedBaseModel.value = baseModels.value[0]
-    } else if (selectedBaseModel.value) {
-      console.log('[AUTO SELECT] Keeping existing model selection:', selectedBaseModel.value.id, selectedBaseModel.value.name)
     }
     
     if (presets.value.length > 0 && !selectedPreset.value) {
       const defaultPreset = presets.value.find(p => p.is_default) || presets.value[0]
-      console.log('[AUTO SELECT] Auto-selecting preset:', defaultPreset.id, defaultPreset.name)
       selectPreset(defaultPreset)
     }
   } catch (error: any) {
-    console.error('Failed to load configuration data:', error)
     showError('Failed to load models and presets: ' + (error.response?.data?.detail || error.message))
   } finally {
     loadingModels.value = false

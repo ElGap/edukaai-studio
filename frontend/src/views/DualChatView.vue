@@ -52,7 +52,7 @@
 
     <div v-else :class="chatMode === 'both' ? 'grid gap-6 lg:grid-cols-2' : 'max-w-4xl mx-auto'">
       <!-- Base Model Panel -->
-      <div v-if="chatMode !== 'finetuned'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-820px)]">
+      <div v-if="chatMode !== 'finetuned'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-280px)]">
         <!-- Panel Header -->
         <div class="p-4 border-b border-slate-800 flex items-center justify-between">
           <div>
@@ -137,7 +137,7 @@
       </div>
 
       <!-- Fine-Tuned Model Panel -->
-      <div v-if="chatMode !== 'base'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-820px)]">
+      <div v-if="chatMode !== 'base'" class="bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[calc(100vh-280px)]">
         <!-- Panel Header -->
         <div class="p-4 border-b border-slate-800 flex items-center justify-between">
           <div>
@@ -389,7 +389,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTrainingStore } from '@/stores/training'
 import axios from 'axios'
@@ -399,6 +399,7 @@ import { formatMessage, sanitizeInput, validateInput } from '@/utils/messageSecu
 const router = useRouter()
 const store = useTrainingStore()
 const { success: showSuccess, error: showError } = useToast()
+const wizard = inject<any>('wizard')
 
 const api = axios.create({
   baseURL: '/api'
@@ -501,7 +502,7 @@ onMounted(async () => {
   
   if (!currentRunId) {
     showError('No completed training run found')
-    router.push({ name: 'summary' })
+    wizard.goToStep(4)
     return
   }
   
@@ -593,16 +594,16 @@ const generateLeftResponse = async (message: string) => {
       content: data.text,
       metrics: {
         responseTime: responseTime,
-        tokens: data.tokens,
-        speed: data.tokens_per_second.toFixed(0)
+        tokens: data.tokens || 0,
+        speed: (data.tokens_per_second || 0).toFixed(0)
       }
     })
     
     // Update stats
     const newCount = leftStats.value.count + 1
     leftStats.value.avgResponseTime = ((leftStats.value.avgResponseTime * leftStats.value.count) + parseFloat(responseTime)) / newCount
-    leftStats.value.avgTokens = ((leftStats.value.avgTokens * leftStats.value.count) + data.tokens) / newCount
-    leftStats.value.avgSpeed = ((leftStats.value.avgSpeed * leftStats.value.count) + data.tokens_per_second) / newCount
+    leftStats.value.avgTokens = ((leftStats.value.avgTokens * leftStats.value.count) + (data.tokens || 0)) / newCount
+    leftStats.value.avgSpeed = ((leftStats.value.avgSpeed * leftStats.value.count) + (data.tokens_per_second || 0)) / newCount
     leftStats.value.count = newCount
     
   } catch (err: any) {
@@ -638,16 +639,16 @@ const generateRightResponse = async (message: string) => {
       content: data.text,
       metrics: {
         responseTime: responseTime,
-        tokens: data.tokens,
-        speed: data.tokens_per_second.toFixed(0)
+        tokens: data.tokens || 0,
+        speed: (data.tokens_per_second || 0).toFixed(0)
       }
     })
     
     // Update stats
     const newCount = rightStats.value.count + 1
     rightStats.value.avgResponseTime = ((rightStats.value.avgResponseTime * rightStats.value.count) + parseFloat(responseTime)) / newCount
-    rightStats.value.avgTokens = ((rightStats.value.avgTokens * rightStats.value.count) + data.tokens) / newCount
-    rightStats.value.avgSpeed = ((rightStats.value.avgSpeed * rightStats.value.count) + data.tokens_per_second) / newCount
+    rightStats.value.avgTokens = ((rightStats.value.avgTokens * rightStats.value.count) + (data.tokens || 0)) / newCount
+    rightStats.value.avgSpeed = ((rightStats.value.avgSpeed * rightStats.value.count) + (data.tokens_per_second || 0)) / newCount
     rightStats.value.count = newCount
     
   } catch (err: any) {

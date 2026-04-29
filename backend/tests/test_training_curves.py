@@ -10,10 +10,8 @@ import pytest
 import tempfile
 from pathlib import Path
 
-os.environ["EDUKAI_ALLOW_REMOTE"] = "true"
-os.environ["EDUKAI_ENV"] = "testing"
-
-sys.path.insert(0, '/Users/developer/Projects/studio/backend')
+os.environ["EDUKAAI_ALLOW_REMOTE"] = "true"
+os.environ["EDUKAAI_ENV"] = "testing"
 
 
 class TestTrainingCurveStepRange:

@@ -53,7 +53,32 @@ PROMPT_INJECTION_PATTERNS = [
 ]
 
 BLOCKED_COMPILED = [re.compile(pattern, re.IGNORECASE | re.DOTALL) for pattern in BLOCKED_PATTERNS]
-INJECTION_COMPILED = [re.compile(pattern, re.IGNORECASE) for pattern in PROMPT_INJECTION_PATTERNS]
+
+
+
+def _apply_fallback_template(messages: list, run_id: str, db) -> str:
+    """Apply architecture-specific chat template fallback when tokenizer lacks one."""
+    from .training import ModelRegistry, TrainingRun
+    from ..core.model_architectures import get_chat_template_fallback
+    
+    architecture = "qwen2"
+    try:
+        run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        if run and run.base_model:
+            architecture = run.base_model.architecture or "qwen2"
+    except Exception:
+        pass
+    
+    template_str = get_chat_template_fallback(architecture)
+    try:
+        from jinja2 import Environment
+        env = Environment()
+        template = env.from_string(template_str)
+        return template.render(messages=messages, add_generation_prompt=True)
+    except Exception:
+        system = next((m["content"] for m in messages if m["role"] == "system"), "You are a helpful assistant.")
+        user = next((m["content"] for m in messages if m["role"] == "user"), "")
+        return f"{system}\n\nUser: {user}\n\nAssistant:"
 
 
 def sanitize_input(text: str, max_length: int = 4000, allow_html: bool = False) -> str:
@@ -87,24 +112,10 @@ def sanitize_input(text: str, max_length: int = 4000, allow_html: bool = False) 
 
 
 def validate_system_prompt(prompt: str) -> tuple[bool, str]:
-    """
-    Validate system prompt for injection attempts.
-    
-    Returns:
-        (is_valid, error_message)
-    """
     if not prompt:
         return True, ""
-    
-    # Check length
     if len(prompt) > 2000:
         return False, "System prompt exceeds maximum length of 2000 characters"
-    
-    # Check for injection patterns
-    for pattern in INJECTION_COMPILED:
-        if pattern.search(prompt):
-            return False, "System prompt contains potentially dangerous patterns"
-    
     return True, ""
 
 
@@ -146,7 +157,11 @@ class GenerateRequest(BaseModel):
         is_valid, error = validate_message(v)
         if not is_valid:
             raise ValueError(error)
-        return sanitize_input(v, max_length=4000, allow_html=False)
+        # Don't HTML-escape before inference — only strip dangerous patterns
+        v = v[:4000]
+        for pattern in BLOCKED_COMPILED:
+            v = pattern.sub('', v)
+        return v
     
     @validator('system_prompt')
     def validate_system_content(cls, v):
@@ -181,40 +196,15 @@ async def load_model(
     
     base_model_id = config["base_model"]["huggingface_id"]
     
-    # Check if model was downloaded during training (custom models)
-    # Use downloaded path if available, otherwise use HF ID
-    # Priority: 1) Custom download dir, 2) HF cache dir, 3) HF ID (will download)
-    from pathlib import Path
-    
-    # 1. Check our custom download directory
-    download_dir = Path(run.storage_path).parent / "downloaded_models" / base_model_id.replace("/", "--")
-    if download_dir.exists() and any(download_dir.glob("model*.safetensors")):
-        model_path = str(download_dir)
-        logger.info(f"Using downloaded model for chat: {model_path}")
+    # Resolve base model to local cache path if available
+    from ..core.model_architectures import get_cached_snapshot_path_sync
+    cached_snapshot = get_cached_snapshot_path_sync(base_model_id)
+    if cached_snapshot:
+        model_path = cached_snapshot
+        logger.info(f"Using cached model for chat: {model_path}")
     else:
-        # 2. Check HF cache directory
-        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-        model_name = base_model_id.replace("/", "--")
-        model_cache_path = cache_dir / f"models--{model_name}"
-        
-        if model_cache_path.exists():
-            snapshots_dir = model_cache_path / "snapshots"
-            if snapshots_dir.exists():
-                # Find the first snapshot with required files
-                for snapshot in snapshots_dir.iterdir():
-                    if snapshot.is_dir() and any(snapshot.glob("*.safetensors")):
-                        model_path = str(snapshot)
-                        logger.info(f"Using HF cached model for chat: {model_path}")
-                        break
-                else:
-                    model_path = base_model_id
-                    logger.info(f"Using HuggingFace model ID for chat: {model_path}")
-            else:
-                model_path = base_model_id
-                logger.info(f"Using HuggingFace model ID for chat: {model_path}")
-        else:
-            model_path = base_model_id
-            logger.info(f"Using HuggingFace model ID for chat: {model_path}")
+        model_path = base_model_id
+        logger.info(f"Using HuggingFace model ID for chat: {model_path}")
     
     if request.use_fine_tuned:
         # Look for adapter file directly in run directory
@@ -268,6 +258,13 @@ async def generate_chat_response(
     
     model, tokenizer, model_name = loaded_models[cache_key]
     
+    # Get architecture for model-aware stop strings
+    from ..models import ModelRegistry, TrainingRun
+    architecture = "qwen2"
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if run and run.base_model:
+        architecture = run.base_model.architecture or "qwen2"
+    
     try:
         result = await generate_response(
             model=model,
@@ -276,7 +273,8 @@ async def generate_chat_response(
             system_prompt=request.system_prompt,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
-            top_p=request.top_p
+            top_p=request.top_p,
+            architecture=architecture
         )
         
         return GenerateResponse(
@@ -330,9 +328,13 @@ async def chat_websocket(
                 })
                 continue
             
-            # Security: Sanitize inputs
-            message = sanitize_input(raw_message, max_length=4000, allow_html=False)
-            system_prompt = sanitize_input(raw_system_prompt, max_length=2000, allow_html=False)
+            # Security: Sanitize inputs (strip dangerous patterns but don't HTML-escape before inference)
+            message = raw_message[:4000]
+            for pattern in BLOCKED_COMPILED:
+                message = pattern.sub('', message)
+            system_prompt = raw_system_prompt[:2000]
+            for pattern in BLOCKED_COMPILED:
+                system_prompt = pattern.sub('', system_prompt)
             
             # Security: Validate system prompt
             is_valid, error_msg = validate_system_prompt(raw_system_prompt)
@@ -381,7 +383,23 @@ async def chat_websocket(
                 response_text = ""
                 token_count = 0
                 
-                full_prompt = f"{system_prompt}\n\nUser: {message}\n\nAssistant:"
+                # Use chat template if available for proper formatting
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": message}
+                ]
+                
+                if hasattr(tokenizer, 'apply_chat_template') and getattr(tokenizer, 'chat_template', None):
+                    try:
+                        full_prompt = tokenizer.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=True
+                        )
+                    except Exception:
+                        full_prompt = _apply_fallback_template(messages, run_id, db)
+                else:
+                    full_prompt = _apply_fallback_template(messages, run_id, db)
                 
                 for token in mlx_generate(
                     model=model,
@@ -417,9 +435,9 @@ async def chat_websocket(
                 })
                 
     except WebSocketDisconnect:
-        print(f"Chat WebSocket disconnected for run {run_id}")
+        logger.info(f"Chat WebSocket disconnected for run {run_id}")
     except Exception as e:
-        print(f"Chat WebSocket error: {e}")
+        logger.error(f"Chat WebSocket error: {e}", exc_info=True)
         await websocket.close()
 
 

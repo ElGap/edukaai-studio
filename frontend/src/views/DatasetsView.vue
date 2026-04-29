@@ -98,16 +98,16 @@
           
           <div v-if="useAutoSplit" class="mt-4">
             <label class="block text-sm font-medium text-slate-300 mb-2">
-              Validation Split ({{ validationSplitPercent }}%)
+              Validation Split ({{ store.validationSplitPercent }}%)
             </label>
             <div class="flex gap-2">
               <button
                 v-for="percent in [5, 10, 15]"
                 :key="percent"
-                @click="validationSplitPercent = percent"
+                @click="store.setValidationSplitPercent(percent)"
                 :class="[
                   'px-3 py-2 rounded-lg text-sm font-medium transition-colors flex-1',
-                  validationSplitPercent === percent
+                  store.validationSplitPercent === percent
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                 ]"
@@ -116,13 +116,13 @@
               </button>
             </div>
             <p class="text-xs text-slate-500 mt-2">
-              <span v-if="validationSplitPercent === 5" class="text-green-400">
+              <span v-if="store.validationSplitPercent === 5" class="text-green-400">
                 95% training, 5% validation - More training data
               </span>
-              <span v-else-if="validationSplitPercent === 10" class="text-blue-400">
+              <span v-else-if="store.validationSplitPercent === 10" class="text-blue-400">
                 90% training, 10% validation - Balanced (standard)
               </span>
-              <span v-else-if="validationSplitPercent === 15" class="text-orange-400">
+              <span v-else-if="store.validationSplitPercent === 15" class="text-orange-400">
                 85% training, 15% validation - More validation data
               </span>
             </p>
@@ -372,7 +372,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTrainingStore } from '@/stores/training'
 import type { Dataset } from '@/stores/training'
@@ -382,6 +382,7 @@ import { useToast } from '@/composables/useToast'
 const router = useRouter()
 const store = useTrainingStore()
 const { error: showError, success: showSuccess } = useToast()
+const wizard = inject<any>('wizard')
 
 // API client
 const api = axios.create({
@@ -393,14 +394,12 @@ const validationFileInput = ref<HTMLInputElement | null>(null)
 const uploadedDataset = ref<Dataset | null>(null)
 const validationFile = ref<File | null>(null)
 const useAutoSplit = ref(true)
-const validationSplitPercent = ref(10)  // 5, 10, or 15%
 const datasetForValidation = ref<Dataset | null>(null)
 const showAllSamples = ref(false)  // Toggle for showing all preview samples
 
 const datasets = ref<Dataset[]>([])
 const selectedDataset = ref<Dataset | null>(null)
 
-const JSON = window.JSON
 
 onMounted(async () => {
   // Load existing datasets from API
@@ -536,11 +535,34 @@ const selectDataset = (dataset: Dataset) => {
   store.setSelectedDataset(dataset.id)
 }
 
-const proceedToConfigure = () => {
+const proceedToConfigure = async () => {
   if (uploadedDataset.value) {
-    // Save validation split preference to store
-    store.setValidationSplitPercent(validationSplitPercent.value)
-    router.push({ name: 'configure' })
+    // Upload validation file if selected
+    if (validationFile.value && uploadedDataset.value.id) {
+      try {
+        const formData = new FormData()
+        formData.append('file', validationFile.value)
+        formData.append('name', `${uploadedDataset.value.name} (Validation)`)
+        
+        await api.post(`/datasets/${uploadedDataset.value.id}/validation`, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        })
+        
+        validationFile.value = null
+        if (validationFileInput.value) {
+          validationFileInput.value.value = ''
+        }
+      } catch (err: any) {
+        console.error('Failed to upload validation file:', err)
+        const errorMessage = err.response?.data?.detail || 'Failed to upload validation file'
+        showError(errorMessage)
+        return
+      }
+    }
+    
+    wizard.goToStep(2, { selectedDatasetId: uploadedDataset.value.id })
   }
 }
 
@@ -572,7 +594,7 @@ const deleteDataset = async () => {
     if (selectedDataset.value?.id === datasetToDelete.value.id) {
       selectedDataset.value = null
       uploadedDataset.value = null
-      store.setSelectedDataset('')
+      store.setSelectedDataset(null)
     }
     
     showSuccess(`Dataset "${datasetToDelete.value.name}" deleted successfully`)
@@ -589,15 +611,8 @@ const deleteDataset = async () => {
 
 // Configure training with specific dataset
 const configureTraining = (dataset: Dataset) => {
-  // Set this dataset as selected
   store.setSelectedDataset(dataset.id)
-  
-  // Also update local state
-  selectedDataset.value = dataset
-  uploadedDataset.value = dataset
-  
-  // Navigate to configure page
-  router.push({ name: 'configure' })
+  wizard.goToStep(2, { selectedDatasetId: dataset.id })
 }
 
 // Validation set handling
