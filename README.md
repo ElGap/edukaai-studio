@@ -268,10 +268,3 @@ We welcome contributions! Contributing guide coming soon.
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [MLX](https://github.com/ml-explore/mlx) - Apple's machine learning framework
-- [HuggingFace](https://huggingface.co/) - Model hub and ecosystem
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
-- [Vue.js](https://vuejs.org/) - Progressive JavaScript framework
