@@ -113,7 +113,7 @@ export interface TrainingRun {
   base_model: BaseModel
   adapter_exported?: boolean
   fused_exported?: boolean
-  gguf_exported?: boolean
+
   training_config?: TrainingConfig
   training_metrics?: TrainingMetric[]
 }

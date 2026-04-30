@@ -611,37 +611,52 @@
 
             <!-- Validation Split -->
             <div>
-              <label class="block text-sm font-medium text-slate-300 mb-2">
-                Validation Split ({{ config.validation_split_percent }}%)
-              </label>
-              <div class="flex gap-2">
-                <button
-                  v-for="percent in [5, 10, 15]"
-                  :key="percent"
-                  @click="config.validation_split_percent = percent"
-                  :class="[
-                    'px-3 py-2 rounded-lg text-sm font-medium transition-colors flex-1',
-                    config.validation_split_percent === percent
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                  ]"
-                >
-                  {{ percent }}%
-                </button>
+              <div class="flex items-center gap-3 mb-3">
+                <input
+                  v-model="config.use_auto_split"
+                  type="checkbox"
+                  id="auto-split-validation"
+                  class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <label for="auto-split-validation" class="text-sm text-white cursor-pointer">
+                  Enable auto-split validation
+                </label>
               </div>
-              <p class="text-xs text-slate-500 mt-1">
-                Percentage of data used for validation
-              </p>
-              <p class="text-xs text-slate-400 mt-1">
-                <span v-if="config.validation_split_percent === 5" class="text-green-400">
-                  ✓ More training data (95%), good for large datasets
-                </span>
-                <span v-else-if="config.validation_split_percent === 10" class="text-blue-400">
-                  ✓ Balanced - standard choice (90% train)
-                </span>
-                <span v-else-if="config.validation_split_percent === 15" class="text-orange-400">
-                  ✓ More validation data (85%), better for small datasets
-                </span>
+
+              <div v-if="config.use_auto_split">
+                <label class="block text-sm font-medium text-slate-300 mb-2">
+                  Validation Split ({{ config.validation_split_percent }}%)
+                </label>
+                <div class="flex gap-2">
+                  <button
+                    v-for="percent in [5, 10, 15]"
+                    :key="percent"
+                    @click="config.validation_split_percent = percent"
+                    :class="[
+                      'px-3 py-2 rounded-lg text-sm font-medium transition-colors flex-1',
+                      config.validation_split_percent === percent
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    ]"
+                  >
+                    {{ percent }}%
+                  </button>
+                </div>
+                <p class="text-xs text-slate-400 mt-1">
+                  <span v-if="config.validation_split_percent === 5" class="text-green-400">
+                    ✓ More training data (95%), good for large datasets
+                  </span>
+                  <span v-else-if="config.validation_split_percent === 10" class="text-blue-400">
+                    ✓ Balanced - standard choice (90% train)
+                  </span>
+                  <span v-else-if="config.validation_split_percent === 15" class="text-orange-400">
+                    ✓ More validation data (85%), better for small datasets
+                  </span>
+                </p>
+              </div>
+
+              <p v-else class="text-xs text-slate-500">
+                All data will be used for training. No validation loss will be calculated.
               </p>
             </div>
           </div>
@@ -768,25 +783,7 @@
               {{ isStartingTraining ? 'Starting Training...' : (canStartTraining ? 'Start Training →' : 'Select Model & Dataset First') }}
             </button>
             
-            <!-- Experimental PII Detection Option -->
-            <div class="flex items-start gap-3 bg-amber-900/20 border border-amber-800/50 rounded-lg p-3">
-              <input
-                v-model="enablePiiDetection"
-                type="checkbox"
-                id="pii-detection"
-                class="w-4 h-4 mt-0.5 rounded border-slate-600 bg-slate-800 text-amber-600 focus:ring-amber-500 cursor-pointer"
-              />
-              <label for="pii-detection" class="text-sm text-slate-300 cursor-pointer flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium text-white">Enable PII Detection & Anonymization</span>
-                  <span class="px-2 py-0.5 text-xs font-medium bg-amber-600/30 text-amber-400 rounded-full">Experimental</span>
-                </div>
-                <p class="mt-1 text-slate-400 text-xs">
-                  Automatically detect and anonymize personally identifiable information (PII) 
-                  such as emails, phone numbers, and names in your dataset before training.
-                </p>
-              </label>
-            </div>
+
           </div>
         </div>
       </div>
@@ -866,7 +863,7 @@ const loadingModels = ref(false)
 const loadingPresets = ref(false)
 const isStartingTraining = ref(false)
 const showAdvanced = ref(false)
-const enablePiiDetection = ref(false)  // Experimental: Enable PII detection (unchecked by default)
+
 
 // Custom model state
 const showCustomModelModal = ref(false)
@@ -914,6 +911,7 @@ const config = ref({
   gradient_checkpointing: false,
   num_lora_layers: 8,
   prompt_masking: true,
+  use_auto_split: true,
   validation_split_percent: store.validationSplitPercent || 10  // Read from store or default 10%
 })
 
@@ -1140,7 +1138,7 @@ const selectPreset = (preset: TrainingPreset) => {
 
 const resetToPreset = () => {
   if (!selectedPreset.value) return
-  
+
   const p = selectedPreset.value
   config.value = {
     steps: p.steps,
@@ -1156,6 +1154,7 @@ const resetToPreset = () => {
     gradient_checkpointing: p.gradient_checkpointing ?? false,
     num_lora_layers: p.num_lora_layers ?? 16,
     prompt_masking: p.prompt_masking ?? true,
+    use_auto_split: config.value.use_auto_split,            // Preserve user's choice
     validation_split_percent: config.value.validation_split_percent  // Preserve user's choice
   }
 }
@@ -1180,7 +1179,7 @@ const startTraining = async () => {
       training_dataset_id: selectedDataset.value.id,
       base_model_id: selectedBaseModel.value!.id,
       preset_id: selectedPreset.value!.id,
-      validation_split_percent: config.value.validation_split_percent,
+      validation_split_percent: config.value.use_auto_split ? config.value.validation_split_percent : 0,
       steps: config.value.steps,
       learning_rate: Number(config.value.learning_rate),
       lora_rank: config.value.lora_rank,
@@ -1194,17 +1193,14 @@ const startTraining = async () => {
       gradient_checkpointing: config.value.gradient_checkpointing,
       num_lora_layers: config.value.num_lora_layers,
       prompt_masking: config.value.prompt_masking,
+      weight_decay: undefined,
+      max_gradient_norm: undefined,
       cpu_cores_limit: resourceLimits.value.cpu_cores,
       gpu_memory_limit_gb: resourceLimits.value.gpu_memory_gb,
       ram_limit_gb: resourceLimits.value.ram_gb
     }
     
-    const requestData = {
-      ...runData,
-      enable_pii_detection: enablePiiDetection.value
-    }
-    
-    const response = await api.post('/training/runs', requestData)
+    const response = await api.post('/training/runs', runData)
     const result = response.data
     
     if (!result || !result.id) {

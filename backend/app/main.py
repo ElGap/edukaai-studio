@@ -26,7 +26,7 @@ from .config import get_settings, ensure_directories
 from .models import init_db, seed_initial_data, get_thread_safe_session
 from .core.exceptions import EdukaAIException
 from .core.logging import setup_logging, setup_exception_logging, get_logger
-from .routers import datasets, training, models, chat
+from .routers import datasets, training, chat
 
 # Setup logging FIRST - before anything else
 logger = setup_logging(log_level=get_settings().log_level)
@@ -385,7 +385,7 @@ async def health_check():
 # Include routers
 app.include_router(datasets.router, prefix="/api", tags=["datasets"])
 app.include_router(training.router, prefix="/api", tags=["training"])
-app.include_router(models.router, prefix="/api", tags=["models"])
+
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 
 

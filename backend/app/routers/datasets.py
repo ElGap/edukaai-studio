@@ -244,7 +244,7 @@ async def upload_dataset(
         description=description,
         format=format_type,
         file_path=storage_path,
-        size_bytes=len(content),
+        size_bytes=len(content_str.encode('utf-8')),
         num_samples=len(sanitized_samples),  # Use sanitized count
         total_raw_samples=len(valid_samples) + len(errors),
         validation_report=validation_report,

@@ -48,7 +48,6 @@ def _check_disk_space(path: Path, min_bytes: int = _MIN_FREE_SPACE_BYTES) -> boo
 
 def _with_retry(func, retries: int = _MAX_DOWNLOAD_RETRIES, backoff: float = 2.0):
     """Call func() with simple exponential-backoff retry on transient errors."""
-    import requests  # noqa: F401 — only used for exception matching
     last_exc = None
     for attempt in range(retries):
         try:
@@ -812,7 +811,8 @@ class TrainingProcess:
             if self.config.weight_decay is not None:
                 args.optimizer_config["adam"]["weight_decay"] = self.config.weight_decay
                 args.optimizer_config["adamw"]["weight_decay"] = self.config.weight_decay
-            args.max_grad_norm = self.config.max_gradient_norm
+            if self.config.max_gradient_norm is not None and self.config.max_gradient_norm > 0:
+                args.max_grad_norm = self.config.max_gradient_norm
             args.clear_cache_threshold = 0
             args.lr_schedule = None  # Disable mlx_lm's built-in schedule, we handle it manually in callback
             from ..core.model_architectures import get_lora_keys, validate_lora_keys_against_model
@@ -820,6 +820,12 @@ class TrainingProcess:
             lora_keys = self.config.lora_target_modules or get_lora_keys(self.config.architecture)
             lora_keys = validate_lora_keys_against_model(self.model, lora_keys)
             logger.info(f"LoRA target keys (validated against model): {lora_keys}")
+            if not lora_keys:
+                raise ValueError(
+                    f"No valid LoRA target keys found for model {self.config.architecture}. "
+                    f"The model may be quantized with unsupported layer types, or the architecture "
+                    f"keys ({get_lora_keys(self.config.architecture)}) may not match the model structure."
+                )
             args.lora_parameters = {
                 "keys": lora_keys,
                 "rank": self.config.lora_rank,
@@ -1303,13 +1309,6 @@ async def export_model(
             
             logger.info(f"Fused model saved to {output_path}")
             return str(output_dir)
-        
-        elif export_format == "gguf":
-            raise NotImplementedError(
-                "GGUF export is not yet supported. "
-                "Export the fused model and convert manually using llama.cpp: "
-                f"python convert.py {output_path} --outfile model.gguf"
-            )
         
         else:
             raise ValueError(f"Unknown export format: {export_format}")

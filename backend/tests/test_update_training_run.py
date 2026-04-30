@@ -114,7 +114,6 @@ class TestUpdateTrainingRun:
                 error_message=saved_run.error_message,
                 adapter_exported=saved_run.adapter_exported,
                 fused_exported=saved_run.fused_exported,
-                gguf_exported=saved_run.gguf_exported,
                 training_config=build_training_config_response(saved_run),
                 base_model=BaseModelResponse(
                     id=base_model.id,
@@ -209,7 +208,6 @@ class TestUpdateTrainingRun:
             error_message=saved_run.error_message,
             adapter_exported=saved_run.adapter_exported,
             fused_exported=saved_run.fused_exported,
-            gguf_exported=saved_run.gguf_exported,
             training_config=build_training_config_response(saved_run),
             base_model=BaseModelResponse(
                 id=base_model.id,

@@ -439,17 +439,7 @@
               Test in Chat →
             </button>
             
-            <button
-              disabled
-              class="w-full py-3 border border-slate-700 text-slate-500 rounded-lg font-medium cursor-not-allowed relative group"
-            >
-              Train Again with Optimized Settings
-              <!-- Tooltip -->
-              <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-slate-300 text-xs rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 border border-slate-700">
-                Coming Soon: Auto-suggest optimized hyperparameters based on your training results (learning rate, LoRA rank, steps, etc.)
-                <div class="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1 border-4 border-transparent border-t-slate-800"></div>
-              </div>
-            </button>
+
           </div>
         </div>
       </div>

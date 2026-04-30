@@ -77,57 +77,7 @@
           />
         </div>
         
-        <!-- Auto-split Option -->
-        <div v-if="!validationFile" class="bg-slate-900 rounded-xl p-6 border border-slate-800">
-          <h3 class="font-medium text-white mb-3">Auto-split Validation</h3>
-          <p class="text-sm text-slate-400 mb-4">
-            Automatically split your dataset into training and validation sets
-          </p>
-          
-          <div class="flex items-center gap-3 mb-4">
-            <input
-              v-model="useAutoSplit"
-              type="checkbox"
-              id="auto-split"
-              class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500"
-            />
-            <label for="auto-split" class="text-white cursor-pointer">
-              Enable auto-split
-            </label>
-          </div>
-          
-          <div v-if="useAutoSplit" class="mt-4">
-            <label class="block text-sm font-medium text-slate-300 mb-2">
-              Validation Split ({{ store.validationSplitPercent }}%)
-            </label>
-            <div class="flex gap-2">
-              <button
-                v-for="percent in [5, 10, 15]"
-                :key="percent"
-                @click="store.setValidationSplitPercent(percent)"
-                :class="[
-                  'px-3 py-2 rounded-lg text-sm font-medium transition-colors flex-1',
-                  store.validationSplitPercent === percent
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                ]"
-              >
-                {{ percent }}%
-              </button>
-            </div>
-            <p class="text-xs text-slate-500 mt-2">
-              <span v-if="store.validationSplitPercent === 5" class="text-green-400">
-                95% training, 5% validation - More training data
-              </span>
-              <span v-else-if="store.validationSplitPercent === 10" class="text-blue-400">
-                90% training, 10% validation - Balanced (standard)
-              </span>
-              <span v-else-if="store.validationSplitPercent === 15" class="text-orange-400">
-                85% training, 15% validation - More validation data
-              </span>
-            </p>
-          </div>
-        </div>
+
       </div>
       
       <!-- Preview Section -->
@@ -393,7 +343,7 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const validationFileInput = ref<HTMLInputElement | null>(null)
 const uploadedDataset = ref<Dataset | null>(null)
 const validationFile = ref<File | null>(null)
-const useAutoSplit = ref(true)
+
 const datasetForValidation = ref<Dataset | null>(null)
 const showAllSamples = ref(false)  // Toggle for showing all preview samples
 

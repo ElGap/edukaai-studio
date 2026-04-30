@@ -572,7 +572,7 @@ def validate_lora_keys_against_model(model, stored_keys: List[str]) -> List[str]
         import mlx.nn as nn
         available_keys = set()
         for name, module in model.named_modules():
-            if isinstance(module, nn.Linear) or hasattr(module, 'input_dims'):
+            if isinstance(module, (nn.Linear, nn.QuantizedLinear)) or hasattr(module, 'input_dims'):
                 available_keys.add(name)
 
         valid_keys = [k for k in stored_keys if k in available_keys]

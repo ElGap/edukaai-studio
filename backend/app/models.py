@@ -101,12 +101,10 @@ class TrainingPreset(Base):
     # Advanced parameters
     weight_decay = Column(Float, nullable=True)
     max_gradient_norm = Column(Float, nullable=True)
-    seed = Column(Integer, nullable=True)
-    checkpoint_frequency = Column(Integer, nullable=True)
     gradient_checkpointing = Column(Boolean, nullable=False, default=False)
     num_lora_layers = Column(Integer, nullable=False, default=16)
     prompt_masking = Column(Boolean, nullable=False, default=True)
-    
+
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -122,9 +120,7 @@ class TrainingRun(Base):
     # Dataset configuration
     training_dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=False)
     validation_dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=True)
-    use_auto_split = Column(Boolean, default=True)
-    validation_split_ratio = Column(Float, nullable=True)
-    
+
     # Base model
     base_model_id = Column(String(36), ForeignKey("base_models.id"), nullable=False, index=True)
     
@@ -142,16 +138,14 @@ class TrainingRun(Base):
     gradient_accumulation_steps = Column(Integer, nullable=False, default=1)
     early_stopping_patience = Column(Integer, nullable=False, default=0)
     max_seq_length = Column(Integer, nullable=False, default=2048)
-    seed = Column(Integer, nullable=True)
-    
+
     # Advanced parameters
     weight_decay = Column(Float, nullable=True)
     max_gradient_norm = Column(Float, nullable=True)
-    checkpoint_frequency = Column(Integer, nullable=False, default=100)
     gradient_checkpointing = Column(Boolean, default=False)
     num_lora_layers = Column(Integer, nullable=False, default=16)
     prompt_masking = Column(Boolean, default=True)
-    validation_split_percent = Column(Integer, nullable=False, default=10)  # 5, 10, or 15%
+    validation_split_percent = Column(Integer, nullable=False, default=10)  # 0 = disabled, 5, 10, or 15%
     
     # Resource limits
     cpu_cores_limit = Column(Integer, nullable=True)
@@ -171,7 +165,6 @@ class TrainingRun(Base):
     # Export status
     adapter_exported = Column(Boolean, default=False)
     fused_exported = Column(Boolean, default=False)
-    gguf_exported = Column(Boolean, default=False)
     
     # User notes/description
     description = Column(Text, nullable=True)

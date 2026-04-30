@@ -1,12 +1,7 @@
 """
-Models router - Model registry and exports
+Models router stub — removed. Model management is handled via /training/base-models endpoints.
 """
 
 from fastapi import APIRouter
 
 router = APIRouter()
-
-# Placeholder - will implement model management endpoints
-@router.get("/models")
-async def list_models():
-    return {"message": "Model management - coming soon"}

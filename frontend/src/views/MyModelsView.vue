@@ -180,15 +180,8 @@
                   >
                     FUSED
                   </span>
-                  <span 
-                    v-if="model.gguf_exported" 
-                    class="px-1.5 py-0.5 bg-orange-900/50 text-orange-400 text-[10px] rounded"
-                    title="GGUF"
-                  >
-                    GGUF
-                  </span>
-                  <span 
-                    v-if="!model.adapter_exported && !model.fused_exported && !model.gguf_exported" 
+                  <span
+                    v-if="!model.adapter_exported && !model.fused_exported" 
                     class="text-xs text-slate-500"
                   >
                     None

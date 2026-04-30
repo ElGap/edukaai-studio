@@ -122,8 +122,8 @@ class CreateTrainingRunRequest(BaseModel):
     base_model_id: str
     preset_id: str
     
-    # Validation split (percentage for auto-split: 5, 10, or 15)
-    validation_split_percent: int = Field(default=10, ge=5, le=15)
+    # Validation split (percentage for auto-split: 0 = disabled, 5, 10, or 15)
+    validation_split_percent: int = Field(default=10, ge=0, le=15)
     
     # Resource limits
     cpu_cores_limit: Optional[int] = Field(default=None, ge=1, le=32)
@@ -148,9 +148,6 @@ class CreateTrainingRunRequest(BaseModel):
     gradient_checkpointing: Optional[bool] = None
     num_lora_layers: Optional[int] = Field(default=None, ge=4, le=32)
     prompt_masking: Optional[bool] = None
-    
-    # PII Detection (Experimental)
-    enable_pii_detection: Optional[bool] = Field(default=False, description="Enable experimental PII detection and anonymization")
 
 
 class ExportStatus(BaseModel):
@@ -163,7 +160,6 @@ class ExportStatus(BaseModel):
 class ExportStatusResponse(BaseModel):
     adapter: ExportStatus
     fused: ExportStatus
-    gguf: ExportStatus
 
 
 class DatasetInfo(BaseModel):
@@ -215,7 +211,6 @@ class TrainingRunResponse(BaseModel):
     created_at: str
     adapter_exported: bool = False
     fused_exported: bool = False
-    gguf_exported: bool = False
     training_config: Optional[TrainingConfigResponse] = None
     
     class Config:
@@ -907,11 +902,7 @@ async def create_training_run(
     db: Session = Depends(get_db)
 ):
     """Create a new training run with configuration."""
-    
-    # Log PII detection status (experimental feature)
-    if request.enable_pii_detection:
-        logger.info(f"[EXPERIMENTAL] PII detection enabled for training run. Dataset will be scanned for PII.")
-    
+
     # Validate dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == request.training_dataset_id).first()
     if not dataset:
@@ -948,39 +939,13 @@ async def create_training_run(
     
     # Copy dataset to run directory
     training_data_path = f"{storage_path}/data/train.jsonl"
-    
+
     # Validate dataset file path before accessing it
     if dataset.file_path:
         assert_safe_path(dataset.file_path, ["./storage/datasets", str(Path("./storage/datasets").resolve())])
 
-    # Apply PII detection if enabled (experimental feature)
-    if request.enable_pii_detection:
-        logger.info(f"[EXPERIMENTAL] Applying PII detection to dataset for run {run_id}")
-        try:
-            # Read original dataset
-            with open(dataset.file_path, 'r') as f:
-                original_content = f.read()
-            
-            # Apply PII sanitization
-            sanitized_content, warnings, anonymization_report = sanitize_dataset_content(original_content)
-            
-            # Write sanitized version to run directory
-            with open(training_data_path, 'w') as f:
-                f.write(sanitized_content)
-            
-            logger.info(f"[EXPERIMENTAL] PII detection complete: {anonymization_report.get('total_replacements', 0)} replacements made")
-            
-            # Store report in config for reference
-            pii_report = anonymization_report
-        except Exception as e:
-            logger.error(f"[EXPERIMENTAL] PII detection failed: {e}")
-            # Fallback: copy original
-            shutil.copy(dataset.file_path, training_data_path)
-            pii_report = {"error": str(e), "skipped": True}
-    else:
-        # Normal flow: just copy the dataset
-        shutil.copy(dataset.file_path, training_data_path)
-        pii_report = {"skipped": True, "reason": "PII detection not enabled"}
+    # Copy dataset to run storage
+    shutil.copy(dataset.file_path, training_data_path)
     
     # Handle validation dataset
     validation_data_path = None
@@ -994,28 +959,21 @@ async def create_training_run(
         if val_dataset.file_path:
             assert_safe_path(val_dataset.file_path, ["./storage/datasets", str(Path("./storage/datasets").resolve())])
         validation_data_path = f"{storage_path}/data/validation.jsonl"
-        
-        # Apply PII detection to validation dataset if enabled
-        if request.enable_pii_detection:
-            try:
-                with open(val_dataset.file_path, 'r') as f:
-                    val_content = f.read()
-                val_sanitized, _, _ = sanitize_dataset_content(val_content)
-                with open(validation_data_path, 'w') as f:
-                    f.write(val_sanitized)
-            except Exception as e:
-                logger.error(f"[EXPERIMENTAL] PII detection failed for validation set: {e}")
-                shutil.copy(val_dataset.file_path, validation_data_path)
-        else:
-            shutil.copy(val_dataset.file_path, validation_data_path)
+
+        # Copy validation dataset to run storage
+        shutil.copy(val_dataset.file_path, validation_data_path)
         
         validation_dataset_id = val_dataset.id
         use_auto_split = False
         validation_split_percent = None
-    else:
+    elif request.validation_split_percent > 0:
         # Auto-split from training data using configured percentage
         use_auto_split = True
         validation_split_percent = request.validation_split_percent
+    else:
+        # Validation split disabled — use all data for training
+        use_auto_split = False
+        validation_split_percent = None
     
     # Save configuration
     config = {
@@ -1045,8 +1003,7 @@ async def create_training_run(
                 "total_replacements": 0,
                 "types_found": {},
                 "fields_affected": []
-            },
-            "enable_pii_detection": request.enable_pii_detection or False
+            }
         },
         "hyperparameters": {
             "steps": request.steps if request.steps is not None else preset.steps,
@@ -1142,7 +1099,6 @@ async def create_training_run(
         status_message=run.status_message or "",
         adapter_exported=run.adapter_exported,
         fused_exported=run.fused_exported,
-        gguf_exported=run.gguf_exported,
         training_config=build_training_config_response(run),
         base_model=BaseModelResponse(
             id=base_model.id,
@@ -1189,7 +1145,6 @@ async def list_training_runs(
             status_message=r.status_message or "",
             adapter_exported=r.adapter_exported,
             fused_exported=r.fused_exported,
-            gguf_exported=r.gguf_exported,
             training_config=build_training_config_response(r),
             base_model=BaseModelResponse(
                 id=r.base_model.id,
@@ -1211,10 +1166,10 @@ async def list_training_runs(
 async def get_training_run(run_id: str, db: Session = Depends(get_db)):
     """Get training run details."""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
-    
+
     if not run:
         raise NotFoundError(f"Training run {run_id} not found")
-    
+
     return TrainingRunResponse(
         id=run.id,
         name=run.name,
@@ -1232,7 +1187,6 @@ async def get_training_run(run_id: str, db: Session = Depends(get_db)):
         status_message=run.status_message or "",
         adapter_exported=run.adapter_exported,
         fused_exported=run.fused_exported,
-        gguf_exported=run.gguf_exported,
         training_config=build_training_config_response(run),
         base_model=BaseModelResponse(
             id=run.base_model.id,
@@ -1246,6 +1200,7 @@ async def get_training_run(run_id: str, db: Session = Depends(get_db)):
         ),
         created_at=run.created_at.isoformat()
     )
+
 
 
 # Note: Duplicate list_training_runs removed - kept the first one above
@@ -1437,7 +1392,6 @@ async def update_training_run(
         status_message=run.status_message or "",
         adapter_exported=run.adapter_exported,
         fused_exported=run.fused_exported,
-        gguf_exported=run.gguf_exported,
         training_config=build_training_config_response(run),
         base_model=BaseModelResponse(
             id=base_model.id,
@@ -1466,8 +1420,18 @@ async def start_training(
     if not run:
         raise NotFoundError(f"Training run {run_id} not found")
     
-    if run.status != "pending":
-        raise ValidationError(f"Cannot start run with status: {run.status}")
+    # Allow restarting failed or stopped runs — reset them to pending first
+    if run.status in ("failed", "stopped"):
+        run.status = "pending"
+        run.error_message = None
+        run.current_step = 0
+        run.best_loss = None
+        run.best_step = None
+        run.completed_at = None
+        db.commit()
+        logger.info(f"Reset run {run_id} from {run.status} to pending for retry")
+    elif run.status != "pending":
+        raise ValidationError(f"Cannot start run with status: {run.status}. Only pending, failed, or stopped runs can be started.")
     
     # SECURITY CHECK #1: Prevent concurrent training runs
     active_runs = db.query(TrainingRun).filter(
@@ -1903,10 +1867,10 @@ async def training_websocket(websocket: WebSocket, run_id: str):
 
 
 # Export endpoints
-ALLOWED_EXPORT_FORMATS = {"adapter", "fused", "gguf"}
+ALLOWED_EXPORT_FORMATS = {"adapter", "fused"}
 
 class ExportRequest(BaseModel):
-    format: str  # "adapter", "fused", "gguf"
+    format: str  # "adapter", "fused"
 
     @field_validator('format')
     @classmethod
@@ -1948,8 +1912,7 @@ async def get_export_status(run_id: str, db: Session = Depends(get_db)):
     # Check actual file existence, not just flags
     adapter_info = _get_export_info(run, "adapter")
     fused_info = _get_export_info(run, "fused")
-    gguf_info = _get_export_info(run, "gguf")
-    
+
     return ExportStatusResponse(
         adapter=ExportStatus(
             available=adapter_info is not None,
@@ -1962,12 +1925,6 @@ async def get_export_status(run_id: str, db: Session = Depends(get_db)):
             path=fused_info["path"] if fused_info else None,
             size_mb=fused_info["size_mb"] if fused_info else None,
             exported_at=datetime.fromtimestamp(os.path.getmtime(fused_info["path"])).isoformat() if fused_info else None
-        ),
-        gguf=ExportStatus(
-            available=gguf_info is not None,
-            path=gguf_info["path"] if gguf_info else None,
-            size_mb=gguf_info["size_mb"] if gguf_info else None,
-            exported_at=datetime.fromtimestamp(os.path.getmtime(gguf_info["path"])).isoformat() if gguf_info else None
         )
     )
 
@@ -1998,9 +1955,6 @@ async def export_model_endpoint(
             db.commit()
         elif request.format == "fused" and not run.fused_exported:
             run.fused_exported = True
-            db.commit()
-        elif request.format == "gguf" and not run.gguf_exported:
-            run.gguf_exported = True
             db.commit()
         
         return {
@@ -2059,9 +2013,7 @@ async def export_model_endpoint(
             run.adapter_exported = True
         elif request.format == "fused":
             run.fused_exported = True
-        elif request.format == "gguf":
-            run.gguf_exported = True
-        
+
         db.commit()
         
         # Get file info
@@ -2115,7 +2067,7 @@ async def download_export(
     
     return FileResponse(
         path=file_path,
-        filename=f"{run.name}-{format}.{'safetensors' if format == 'adapter' else 'gguf' if format == 'gguf' else 'bin'}",
+        filename=f"{run.name}-{format}.{'safetensors' if format == 'adapter' else 'bin'}",
         media_type='application/octet-stream'
     )
 
