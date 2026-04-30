@@ -110,3 +110,4 @@ docs
 !docs/screenshots
 .build/
 dist/
+.edukaai.pid

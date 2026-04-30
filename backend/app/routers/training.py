@@ -94,6 +94,7 @@ class BaseModelResponse(BaseModel):
     mlx_config: Optional[Dict] = None
     is_custom: bool = False
     is_downloaded: bool = False
+    download_status: str = "missing"  # "complete" | "incomplete" | "missing"
 
 
 class TrainingPresetResponse(BaseModel):
@@ -724,16 +725,28 @@ async def get_recommended_config(model_id: str, db: Session = Depends(get_db)):
 async def list_base_models(db: Session = Depends(get_db)):
     """List all active base models."""
     import asyncio
-    from ..core.model_architectures import _is_model_complete_sync
+    from ..core.model_architectures import _is_model_complete_sync, _get_hf_cache_root
+    from pathlib import Path
 
     models = db.query(ModelRegistry).filter(
         ModelRegistry.is_active == True
     ).order_by(ModelRegistry.parameter_count).all()
 
-    # Check download status in parallel to avoid blocking on disk I/O
+    def _check_status(hf_id: str):
+        """Return (is_complete, has_any_files)."""
+        is_complete = _is_model_complete_sync(hf_id)
+        if is_complete:
+            return True, True
+        # Check if ANY snapshot dir exists (metadata without weights)
+        cache_root = _get_hf_cache_root()
+        model_cache = cache_root / f"models--{hf_id.replace('/', '--')}"
+        snapshots = model_cache / "snapshots"
+        has_any = snapshots.exists() and any(d.is_dir() for d in snapshots.iterdir())
+        return False, has_any
+
     async def _check_one(m):
-        is_downloaded = await asyncio.to_thread(_is_model_complete_sync, m.huggingface_id)
-        return m, is_downloaded
+        is_complete, has_any = await asyncio.to_thread(_check_status, m.huggingface_id)
+        return m, is_complete, has_any
 
     checked = await asyncio.gather(*[_check_one(m) for m in models])
 
@@ -751,9 +764,10 @@ async def list_base_models(db: Session = Depends(get_db)):
                 "is_custom": not m.is_curated
             },
             is_custom=not m.is_curated,
-            is_downloaded=is_downloaded,
+            is_downloaded=is_complete,
+            download_status=("complete" if is_complete else ("incomplete" if has_any else "missing")),
         )
-        for m, is_downloaded in checked
+        for m, is_complete, has_any in checked
     ]
 
 
@@ -844,6 +858,47 @@ async def list_training_presets(db: Session = Depends(get_db)):
         )
         for p in presets
     ]
+
+
+@router.get("/base-models/{model_id}/download-status")
+async def get_model_download_status(model_id: str, db: Session = Depends(get_db)):
+    """
+    Check whether a model's weight files are fully present in the local cache.
+    Returns cache-health metadata so the UI can show 'Download incomplete' badges.
+    """
+    from ..core.model_architectures import _is_model_complete_sync, _get_hf_cache_root
+    from pathlib import Path
+
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise NotFoundError(f"Model {model_id} not found")
+
+    is_complete = await asyncio.to_thread(_is_model_complete_sync, model.huggingface_id)
+
+    cache_root = _get_hf_cache_root()
+    model_cache = cache_root / f"models--{model.huggingface_id.replace('/', '--')}"
+    snapshots = model_cache / "snapshots"
+
+    snapshot_dir = None
+    if snapshots.exists():
+        for snapshot in snapshots.iterdir():
+            if snapshot.is_dir():
+                snapshot_dir = str(snapshot)
+                break
+
+    return {
+        "model_id": model_id,
+        "huggingface_id": model.huggingface_id,
+        "is_complete": is_complete,
+        "cache_snapshot_dir": snapshot_dir,
+        "cache_root": str(cache_root),
+        "message": (
+            "Model weights fully cached."
+            if is_complete
+            else "Model metadata cached but weight files (*.safetensors) are missing. "
+                 "Please delete and re-add the model to trigger a fresh download."
+        ),
+    }
 
 
 @router.post("/training/runs", response_model=TrainingRunResponse)

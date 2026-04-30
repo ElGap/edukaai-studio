@@ -38,6 +38,7 @@ export interface BaseModel {
   parameter_count: number
   context_length: number
   is_downloaded?: boolean
+  download_status?: string
   mlx_config?: {
     is_curated?: boolean
     is_custom?: boolean

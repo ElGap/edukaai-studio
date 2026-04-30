@@ -57,6 +57,22 @@
         </div>
       </div>
 
+      <!-- Loss Trend Sparkline -->
+      <div v-if="logData.entries.length > 1" class="bg-slate-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-2">
+          <p class="text-sm font-medium text-white">Loss Trend (last {{ Math.min(logData.entries.length, 50) }} steps)</p>
+          <p class="text-xs text-slate-400">{{ finalLoss }}</p>
+        </div>
+        <svg class="w-full h-8" viewBox="0 0 120 30" preserveAspectRatio="none">
+          <path
+            :d="lossSparklinePath"
+            fill="none"
+            stroke="#3b82f6"
+            stroke-width="1.5"
+          />
+        </svg>
+      </div>
+
       <!-- Learning Rate Visualization -->
       <div class="bg-slate-800 rounded-lg p-4">
         <div class="flex items-center justify-between mb-2">
@@ -64,7 +80,7 @@
           <p class="text-sm text-slate-400">{{ currentLR }}</p>
         </div>
         <div class="h-2 bg-slate-700 rounded-full overflow-hidden">
-          <div 
+          <div
             class="h-full bg-blue-500 rounded-full transition-all duration-500"
             :style="{ width: lrPercentage + '%' }"
           ></div>
@@ -129,9 +145,12 @@
               </thead>
               <tbody class="divide-y divide-slate-800">
                 <tr
-                  v-for="entry in logData.entries"
+                  v-for="(entry, idx) in logData.entries"
                   :key="entry.step"
-                  class="hover:bg-slate-800/50 transition-colors"
+                  :class="[
+                    'hover:bg-slate-800/50 transition-colors',
+                    getLossTrendClass(entry.loss, idx)
+                  ]"
                 >
                   <td class="py-2 px-3 text-slate-300">{{ entry.step }}</td>
                   <td class="py-2 px-3 font-medium" :class="getLossColor(entry.loss)">{{ (entry.loss ?? 0).toFixed(4) }}</td>
@@ -274,6 +293,35 @@ const getLossColor = (loss: number | undefined): string => {
   if (normalized < 0.8) return 'text-yellow-400'
   return 'text-red-400'
 }
+
+/** Color-code table row background based on loss trend vs previous step */
+const getLossTrendClass = (loss: number | undefined, idx: number): string => {
+  const entries = logData.value.entries
+  if (loss === undefined || idx <= 0) return ''
+  const prev = entries[idx - 1]?.loss
+  if (prev === undefined) return ''
+  if (loss < prev - 0.0001) return 'bg-green-900/10'
+  if (loss > prev + 0.0001) return 'bg-red-900/10'
+  return 'bg-slate-800/20'
+}
+
+/** Mini sparkline path for loss trend (last 50 steps) */
+const lossSparklinePath = computed(() => {
+  const entries = logData.value.entries
+  if (entries.length < 2) return ''
+  const recent = entries.slice(-50)
+  const min = Math.min(...recent.map(e => e.loss ?? 0))
+  const max = Math.max(...recent.map(e => e.loss ?? 0))
+  const range = max - min || 1
+  const width = 120
+  const height = 30
+  const stepX = width / (recent.length - 1)
+  return recent.map((e, i) => {
+    const x = i * stepX
+    const y = height - ((e.loss! - min) / range) * height
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+})
 
 onMounted(() => {
   loadLog()

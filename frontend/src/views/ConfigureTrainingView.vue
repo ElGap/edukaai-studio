@@ -82,6 +82,7 @@
                         <h3 class="font-medium text-white text-sm truncate">{{ model.name }}</h3>
                         <p class="text-xs text-slate-500 mt-0.5 truncate">{{ model.huggingface_id }}</p>
                         <span v-if="model.is_downloaded" class="inline-block mt-1 px-1.5 py-0.5 bg-green-600/20 text-green-400 text-[10px] rounded">Cached</span>
+                        <span v-else-if="model.download_status === 'incomplete'" class="inline-block mt-1 px-1.5 py-0.5 bg-orange-600/20 text-orange-400 text-[10px] rounded" title="Metadata cached but weight files missing. Please delete and re-add the model.">Incomplete</span>
                         <span v-else class="inline-block mt-1 px-1.5 py-0.5 bg-slate-600/20 text-slate-400 text-[10px] rounded">Not downloaded</span>
                       </div>
                     </td>
@@ -130,6 +131,7 @@
                         <p class="text-xs text-slate-500 mt-0.5 truncate">{{ model.huggingface_id }}</p>
                         <span class="inline-block mt-1 px-1.5 py-0.5 bg-purple-600/20 text-purple-400 text-[10px] rounded">Custom</span>
                         <span v-if="model.is_downloaded" class="inline-block mt-1 ml-1 px-1.5 py-0.5 bg-green-600/20 text-green-400 text-[10px] rounded">Cached</span>
+                        <span v-else-if="model.download_status === 'incomplete'" class="inline-block mt-1 ml-1 px-1.5 py-0.5 bg-orange-600/20 text-orange-400 text-[10px] rounded" title="Metadata cached but weight files missing. Please delete and re-add the model.">Incomplete</span>
                         <span v-else class="inline-block mt-1 ml-1 px-1.5 py-0.5 bg-slate-600/20 text-slate-400 text-[10px] rounded">Not downloaded</span>
                       </div>
                     </td>

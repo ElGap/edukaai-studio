@@ -589,14 +589,22 @@ def validate_lora_keys_against_model(model, stored_keys: List[str]) -> List[str]
         return stored_keys
 
 
-def _is_model_complete_sync(huggingface_id: str) -> bool:
-    """Check if a model is fully downloaded in the native HF cache."""
+def _get_hf_cache_root() -> Path:
+    """Return the active HuggingFace cache directory.
+    Must respect HF_HUB_CACHE env var set in main.py before any import.
+    """
     import os
     from pathlib import Path
-
-    cache_root = Path(
+    return Path(
         os.environ.get("HF_HUB_CACHE", Path.home() / ".cache" / "huggingface" / "hub")
     )
+
+
+def _is_model_complete_sync(huggingface_id: str) -> bool:
+    """Check if a model is fully downloaded in the native HF cache."""
+    from pathlib import Path
+
+    cache_root = _get_hf_cache_root()
     model_cache = cache_root / f"models--{huggingface_id.replace('/', '--')}"
     snapshots = model_cache / "snapshots"
     if not snapshots.exists():
@@ -614,12 +622,9 @@ def _is_model_complete_sync(huggingface_id: str) -> bool:
 
 def get_cached_snapshot_path_sync(huggingface_id: str) -> Optional[str]:
     """Return the snapshot directory path if model is fully cached, else None."""
-    import os
     from pathlib import Path
 
-    cache_root = Path(
-        os.environ.get("HF_HUB_CACHE", Path.home() / ".cache" / "huggingface" / "hub")
-    )
+    cache_root = _get_hf_cache_root()
     model_cache = cache_root / f"models--{huggingface_id.replace('/', '--')}"
     snapshots = model_cache / "snapshots"
     if not snapshots.exists():

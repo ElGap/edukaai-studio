@@ -9,6 +9,7 @@ import time
 import signal
 import psutil
 import asyncio
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Callable, Any
@@ -27,6 +28,47 @@ import re
 
 # Logging
 logger = get_logger(__name__)
+
+# Minimum free disk space (in bytes) required before downloading a model
+# Rough estimate: 8GB for 4B params + overhead
+_MIN_FREE_SPACE_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
+
+# Maximum retries for transient network errors during download
+_MAX_DOWNLOAD_RETRIES = 3
+
+
+def _check_disk_space(path: Path, min_bytes: int = _MIN_FREE_SPACE_BYTES) -> bool:
+    """Return True if at least min_bytes of free space exist on the filesystem."""
+    try:
+        stat = shutil.disk_usage(path)
+        return stat.free >= min_bytes
+    except OSError:
+        return False
+
+
+def _with_retry(func, retries: int = _MAX_DOWNLOAD_RETRIES, backoff: float = 2.0):
+    """Call func() with simple exponential-backoff retry on transient errors."""
+    import requests  # noqa: F401 — only used for exception matching
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return func()
+        except Exception as exc:
+            last_exc = exc
+            exc_name = type(exc).__name__
+            is_transient = any(
+                pat in exc_name.lower() or pat in str(exc).lower()
+                for pat in ("connection", "timeout", "reset", "temporary", "network")
+            )
+            if not is_transient or attempt == retries - 1:
+                raise
+            wait = backoff * (2 ** attempt)
+            logger.warning(
+                f"[MODEL RESOLUTION] Download attempt {attempt + 1} failed ({exc_name}). "
+                f"Retrying in {wait:.1f}s..."
+            )
+            time.sleep(wait)
+    raise last_exc
 
 # (HF_HUB_CACHE is set in main.py before any huggingface_hub import)
 
@@ -424,6 +466,9 @@ class TrainingProcess:
         self.tokens_per_second = 0
         self.it_per_second = 0
         
+        # Dataset / run context surfaced to UI live logs
+        self.dataset_context: Optional[Dict[str, Any]] = None
+        
         # Callbacks
         self.on_step_complete: Optional[Callable[[Dict], None]] = None
         self.on_checkpoint_saved: Optional[Callable[[int, float], None]] = None
@@ -497,7 +542,7 @@ class TrainingProcess:
         try:
             os.makedirs(os.path.dirname(self.detailed_log_path), exist_ok=True)
             with open(self.detailed_log_path, 'w') as f:
-                f.write("timestamp,step,loss,learning_rate,tokens_per_second,it_per_second,cpu_percent,memory_mb,peak_memory_mb\n")
+                f.write("timestamp,step,loss,learning_rate,tokens_per_second,it_per_second,cpu_percent,memory_mb,peak_memory_mb,validation_loss\n")
         except Exception as e:
             logger.warning(f"Could not create detailed log file: {e}")
 
@@ -508,9 +553,10 @@ class TrainingProcess:
             cpu_percent = resources.get("cpu_percent", 0)
             memory_mb = resources.get("memory_mb", 0)
             peak_memory_mb = resources.get("peak_memory_mb", 0)
+            val_loss = self.validation_loss if self.validation_loss is not None else ""
 
             with open(self.detailed_log_path, 'a') as f:
-                f.write(f"{timestamp},{step},{loss:.6f},{learning_rate:.2e},{tokens_per_sec:.2f},{it_per_sec:.2f},{cpu_percent:.1f},{memory_mb:.1f},{peak_memory_mb:.1f}\n")
+                f.write(f"{timestamp},{step},{loss:.6f},{learning_rate:.2e},{tokens_per_sec:.2f},{it_per_sec:.2f},{cpu_percent:.1f},{memory_mb:.1f},{peak_memory_mb:.1f},{val_loss}\n")
         except Exception as e:
             logger.warning(f"Could not write to detailed log: {e}")
 
@@ -562,6 +608,7 @@ class TrainingProcess:
         from huggingface_hub import snapshot_download, login as hf_login
         from huggingface_hub.utils import LocalEntryNotFoundError
         from ..config import get_settings
+        from ..core.model_architectures import _is_model_complete_sync, _get_hf_cache_root
 
         settings = get_settings()
         hf_token = settings.hf_token or None
@@ -572,7 +619,7 @@ class TrainingProcess:
             except Exception:
                 pass
 
-        # 1. Check if already cached without any network round-trip
+        # 1. Check if already cached AND complete (weight files present, not just metadata)
         try:
             cached_path = snapshot_download(
                 repo_id=model_id,
@@ -580,8 +627,14 @@ class TrainingProcess:
                 local_files_only=True,
                 token=hf_token,
             )
-            logger.info(f"[MODEL RESOLUTION] Using cached model: {cached_path}")
-            return cached_path
+            if _is_model_complete_sync(model_id):
+                logger.info(f"[MODEL RESOLUTION] Using cached model: {cached_path}")
+                return cached_path
+            else:
+                logger.warning(
+                    f"[MODEL RESOLUTION] Model snapshot exists but weight files are incomplete "
+                    f"for {model_id}. Will re-download..."
+                )
         except LocalEntryNotFoundError:
             logger.info(f"[MODEL RESOLUTION] Model not in local cache, will download...")
 
@@ -589,18 +642,59 @@ class TrainingProcess:
         if self._check_should_stop():
             raise RuntimeError("Download stopped by user")
 
+        # --- Phase 4: Robustness ---
+        # 2. Disk-space guard
+        cache_root = _get_hf_cache_root()
+        if not _check_disk_space(cache_root):
+            raise RuntimeError(
+                f"Not enough free disk space to download {model_id}. "
+                f"At least {_MIN_FREE_SPACE_BYTES / (1024**3):.0f} GB is required. "
+                f"Please free up space and try again."
+            )
+
         self._update_status("downloading", f"Downloading {model_id}...")
 
-        # 2. Download (XET-backed, parallel, resumable)
-        downloaded_path = snapshot_download(
-            repo_id=model_id,
-            allow_patterns=self.DOWNLOAD_ALLOW_PATTERNS,
-            resume_download=True,
-            token=hf_token,
-        )
+        # 3. Download with retry for transient network errors
+        def _do_download():
+            return snapshot_download(
+                repo_id=model_id,
+                allow_patterns=self.DOWNLOAD_ALLOW_PATTERNS,
+                resume_download=True,
+                token=hf_token,
+            )
+
+        try:
+            downloaded_path = _with_retry(_do_download, retries=_MAX_DOWNLOAD_RETRIES)
+        except Exception as exc:
+            # If retries exhausted, surface a helpful message
+            exc_name = type(exc).__name__
+            if any(p in exc_name.lower() or p in str(exc).lower() for p in ("connection", "timeout", "reset")):
+                raise RuntimeError(
+                    f"Network error while downloading {model_id}: {exc}. "
+                    f"Please check your internet connection and try again."
+                )
+            if "disk" in str(exc).lower() or "space" in str(exc).lower():
+                raise RuntimeError(
+                    f"Disk full or write error while downloading {model_id}: {exc}. "
+                    f"Please free up disk space and try again."
+                )
+            raise
 
         if self._check_should_stop():
             raise RuntimeError("Download stopped by user")
+
+        # 4. Verify download actually produced complete weight files
+        if not _is_model_complete_sync(model_id):
+            logger.error(
+                f"[MODEL RESOLUTION] Download returned path {downloaded_path} but "
+                f"weight files are still missing for {model_id}."
+            )
+            raise RuntimeError(
+                f"Model download incomplete for {model_id}. The weight files are missing. "
+                f"Please remove the model from My Models and re-add it to trigger a fresh download. "
+                f"You can also manually delete the cache directory: "
+                f"{cache_root}/models--{model_id.replace('/', '--')}"
+            )
 
         logger.info(f"[MODEL RESOLUTION] Downloaded model to: {downloaded_path}")
         return downloaded_path
@@ -646,11 +740,27 @@ class TrainingProcess:
                     "SECURITY: allow_remote_code is enabled. "
                     "Custom tokenizer code from the model repository will be executed."
                 )
-            self.model, self.tokenizer = await asyncio.to_thread(
-                load,
-                self.model_path,
-                tokenizer_config={"trust_remote_code": settings.allow_remote_code}
-            )
+            try:
+                self.model, self.tokenizer = await asyncio.to_thread(
+                    load,
+                    self.model_path,
+                    tokenizer_config={"trust_remote_code": settings.allow_remote_code}
+                )
+            except (FileNotFoundError, OSError) as load_exc:
+                # Common cause: snapshot exists but *.safetensors weight files are missing
+                # (interrupted download, or snapshot_download returned path to incomplete cache)
+                err_msg = str(load_exc)
+                if "safetensors" in err_msg.lower() or "no such file" in err_msg.lower():
+                    logger.error(
+                        f"[MODEL LOADING] Model weight files missing for {self.config.model_id} "
+                        f"at {self.model_path}. Error: {err_msg}"
+                    )
+                    raise RuntimeError(
+                        f"Model download appears incomplete for '{self.config.model_id}'. "
+                        f"The weight files (*.safetensors) are missing. "
+                        f"Please remove the model from 'My Models' and re-add it to trigger a fresh download."
+                    ) from load_exc
+                raise
             
             # Model loaded successfully - verify by checking config
             logger.info("[MODEL LOADING] ✓ Model loaded successfully")
@@ -757,6 +867,22 @@ class TrainingProcess:
                     raise ValueError("Dataset loaded but contains 0 examples")
                 
                 logger.info(f"Successfully loaded {len(train_set)} training examples")
+                
+                # Build dataset context for UI live logs
+                val_file = os.path.join(data_dir, "valid.jsonl")
+                val_count = 0
+                if os.path.exists(val_file):
+                    with open(val_file, 'r') as vf:
+                        val_count = sum(1 for line in vf if line.strip())
+                
+                self.dataset_context = {
+                    "samples": len(train_set),
+                    "batch_size": args.batch_size,
+                    "format": "chat" if hasattr(train_set, '_data') and train_set._data and 'messages' in str(train_set._data[0]) else "alpaca",
+                    "validation_samples": val_count,
+                    "data_dir": data_dir,
+                }
+                logger.info(f"[DATASET CONTEXT] {self.dataset_context}")
                 
                 # Log validation approach
                 validation_file = os.path.join(data_dir, "valid.jsonl")
@@ -946,6 +1072,7 @@ class TrainingProcess:
             "it_per_second": self.it_per_second,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
+            "dataset_context": self.dataset_context,
         }
 
 

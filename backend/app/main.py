@@ -418,8 +418,22 @@ for _candidate in _static_dist_candidates:
 
 if _static_dist_path:
     from fastapi.staticfiles import StaticFiles
-    app.mount("/", StaticFiles(directory=str(_static_dist_path), html=True), name="static")
-    logger.info(f"Serving frontend static files from {_static_dist_path}")
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    class SPAStaticFiles(StaticFiles):
+        """Custom StaticFiles that serves index.html for missing paths (SPA fallback)."""
+        async def get_response(self, path: str, scope):
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404 and path != "index.html":
+                    # SPA fallback: serve index.html for any non-existent path
+                    # so Vue Router can handle client-side navigation.
+                    return await super().get_response("index.html", scope)
+                raise
+
+    app.mount("/", SPAStaticFiles(directory=str(_static_dist_path), html=True), name="static")
+    logger.info(f"Serving frontend static files from {_static_dist_path} with SPA fallback")
 else:
     logger.info(
         f"Frontend dist not found. Checked: {[str(c) for c in _static_dist_candidates]} — running API-only mode"

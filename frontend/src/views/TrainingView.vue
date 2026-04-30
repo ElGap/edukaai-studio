@@ -148,9 +148,57 @@
               <span class="text-sm text-slate-400">{{ connectionStatus }}</span>
             </div>
           </div>
-          <div 
-            ref="logsContainer" 
-            class="h-64 bg-slate-950 rounded-lg p-4 font-mono text-sm overflow-y-auto space-y-1 scroll-smooth"
+
+          <!-- Dataset context banner (one-time) -->
+          <div
+            v-if="datasetContext"
+            class="mb-3 px-3 py-2 bg-blue-900/30 border border-blue-800 rounded-lg text-xs text-blue-200 flex gap-3 flex-wrap"
+          >
+            <span><strong class="text-blue-100">Dataset:</strong> {{ datasetContext.samples }} samples</span>
+            <span><strong class="text-blue-100">Batch:</strong> {{ datasetContext.batch_size }}</span>
+            <span><strong class="text-blue-100">Format:</strong> {{ datasetContext.format }}</span>
+            <span v-if="datasetContext.validation_samples"><strong class="text-blue-100">Validation:</strong> {{ datasetContext.validation_samples }} samples</span>
+          </div>
+
+          <!-- Structured training steps (compact table) -->
+          <div
+            v-if="structuredLogs.length > 0"
+            class="mb-2 overflow-x-auto"
+          >
+            <table class="w-full text-xs font-mono">
+              <thead class="text-slate-500 border-b border-slate-700">
+                <tr>
+                  <th class="text-left py-1 px-2">Step</th>
+                  <th class="text-right py-1 px-2">Loss</th>
+                  <th class="text-right py-1 px-2">LR</th>
+                  <th class="text-right py-1 px-2">tok/s</th>
+                  <th class="text-right py-1 px-2">Mem</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/50">
+                <tr
+                  v-for="(entry, idx) in structuredLogs.slice(-8)"
+                  :key="idx"
+                  :class="[
+                    'transition-colors',
+                    entry.anomaly ? 'bg-orange-900/20 text-orange-300' : '',
+                    !entry.anomaly && entry.trend === 'down' ? 'text-green-300' : '',
+                    !entry.anomaly && entry.trend === 'up' ? 'text-red-300' : ''
+                  ]"
+                >
+                  <td class="py-1 px-2 text-slate-400">{{ entry.step }}</td>
+                  <td class="py-1 px-2 text-right font-medium">{{ entry.loss.toFixed(4) }}</td>
+                  <td class="py-1 px-2 text-right text-slate-400">{{ entry.lr.toExponential(2) }}</td>
+                  <td class="py-1 px-2 text-right text-slate-400">{{ entry.tokensPerSecond.toFixed(0) }}</td>
+                  <td class="py-1 px-2 text-right text-slate-400">{{ entry.memoryGB.toFixed(1) }}G</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div
+            ref="logsContainer"
+            class="h-48 bg-slate-950 rounded-lg p-4 font-mono text-sm overflow-y-auto space-y-1 scroll-smooth"
             @scroll="handleLogScroll"
           >
             <div
@@ -158,8 +206,8 @@
               :key="index"
               :class="[
                 'text-slate-300',
-                log.level === 'error' ? 'text-red-400' : 
-                log.level === 'warning' ? 'text-yellow-400' : 
+                log.level === 'error' ? 'text-red-400' :
+                log.level === 'warning' ? 'text-yellow-400' :
                 log.level === 'success' ? 'text-green-400' : ''
               ]"
             >
@@ -173,8 +221,8 @@
           </div>
           <div class="mt-2 flex justify-between items-center">
             <span class="text-xs text-slate-500">{{ logs.length }} log entries</span>
-            <button 
-              v-if="!autoScrollLogs" 
+            <button
+              v-if="!autoScrollLogs"
               @click="enableAutoScroll"
               class="text-xs text-blue-400 hover:text-blue-300 transition-colors"
             >
@@ -379,6 +427,27 @@ const lossHistory = ref<Array<{ step: number; loss: number }>>([])
 const valLossHistory = ref<Array<{ step: number; loss: number }>>([])
 const autoScrollLogs = ref(true)
 
+// Structured live-log entries (training steps)
+interface StructuredLogEntry {
+  step: number
+  loss: number
+  lr: number
+  tokensPerSecond: number
+  memoryGB: number
+  trend: 'up' | 'down' | 'flat'
+  anomaly?: string
+}
+const structuredLogs = ref<StructuredLogEntry[]>([])
+
+// Dataset context banner
+const datasetContext = ref<any>(null)
+
+// Anomaly tracking
+const lastLosses = ref<number[]>([])
+const lowThroughputTimer = ref<number>(0)
+const LOW_TOKS_THRESHOLD = 5  // tok/s
+const LOW_TOKS_DURATION = 6   // 6 consecutive ticks (~3 sec with 500ms WS) = 3s
+
 // Resource metrics
 const cpuUsage = ref(0)
 const peakCpuPercent = ref(0)
@@ -514,11 +583,11 @@ const visibleValidationPoints = computed(() => {
 const addLog = (message: string, level: string = 'info') => {
   const timestamp = new Date().toLocaleTimeString()
   logs.value.push({ timestamp, message, level })
-  
+
   if (logs.value.length > 100) {
     logs.value = logs.value.slice(-100)
   }
-  
+
   if (autoScrollLogs.value) {
     nextTick(() => {
       if (logsContainer.value) {
@@ -526,6 +595,31 @@ const addLog = (message: string, level: string = 'info') => {
       }
     })
   }
+}
+
+/** Detect loss anomaly: spike > 3× rolling mean of last 5 points */
+function detectLossAnomaly(currentLoss: number): string | undefined {
+  if (lastLosses.value.length < 5) return undefined
+  const recent = lastLosses.value.slice(-5)
+  const mean = recent.reduce((a, b) => a + b, 0) / recent.length
+  if (mean > 0 && currentLoss > mean * 3) {
+    return `Loss spike: ${currentLoss.toFixed(4)} vs avg ${mean.toFixed(4)}`
+  }
+  return undefined
+}
+
+/** Detect low throughput anomaly */
+function detectThroughputAnomaly(tokensPerSecond: number): string | undefined {
+  if (tokensPerSecond <= 0) return undefined
+  if (tokensPerSecond < LOW_TOKS_THRESHOLD) {
+    lowThroughputTimer.value += 1
+    if (lowThroughputTimer.value >= LOW_TOKS_DURATION) {
+      return `Very low throughput: ${tokensPerSecond.toFixed(1)} tok/s`
+    }
+  } else {
+    lowThroughputTimer.value = 0
+  }
+  return undefined
 }
 
 const handleLogScroll = () => {
@@ -650,7 +744,12 @@ const connectWebSocket = () => {
     
     if (data.type === 'training_update') {
       const stats = data.data
-      
+
+      // Capture dataset context once when available
+      if (stats.dataset_context && !datasetContext.value) {
+        datasetContext.value = stats.dataset_context
+      }
+
       // Save metric to store for Summary page curves
       store.addTrainingMetric({
         step: stats.current_step,
@@ -661,39 +760,66 @@ const connectWebSocket = () => {
         cpu_percent: stats.peak_cpu_percent,
         gpu_memory_used_mb: stats.peak_memory_mb
       })
-      
+
       // Update progress
       currentStep.value = stats.current_step
       if (stats.best_loss !== undefined && stats.best_loss !== null) {
         bestLoss.value = stats.best_loss
         bestStep.value = stats.best_step
       }
-      
+
       // Add loss to history - include step 0 and always include last point
       if (stats.current_loss !== undefined && stats.current_loss !== null) {
         lossHistory.value.push({
           step: stats.current_step,
           loss: stats.current_loss
         })
-        
+
+        // Rolling loss buffer for anomaly detection
+        lastLosses.value.push(stats.current_loss)
+        if (lastLosses.value.length > 10) lastLosses.value.shift()
+
+        // Build structured log entry every 10 steps
+        if (stats.current_step % 10 === 0 || stats.current_step === 1) {
+          const prevLoss = lastLosses.value.length >= 2
+            ? lastLosses.value[lastLosses.value.length - 2]
+            : stats.current_loss
+          const trend: 'up' | 'down' | 'flat' =
+            stats.current_loss < prevLoss - 0.001 ? 'down' :
+            stats.current_loss > prevLoss + 0.001 ? 'up' : 'flat'
+
+          const anomalyLoss = detectLossAnomaly(stats.current_loss)
+          const anomalyThroughput = detectThroughputAnomaly(stats.tokens_per_second || 0)
+          const anomaly = anomalyLoss || anomalyThroughput
+
+          if (anomaly) {
+            addLog(anomaly, 'warning')
+          }
+
+          const memGB = stats.peak_memory_mb ? stats.peak_memory_mb / 1024 : 0
+          structuredLogs.value.push({
+            step: stats.current_step,
+            loss: stats.current_loss,
+            lr: stats.learning_rate || 0,
+            tokensPerSecond: stats.tokens_per_second || 0,
+            memoryGB: memGB,
+            trend,
+            anomaly
+          })
+          if (structuredLogs.value.length > 100) {
+            structuredLogs.value = structuredLogs.value.slice(-100)
+          }
+        }
+
         // Add validation loss if available (only when validation runs, typically every 100 steps)
         if (stats.validation_loss !== undefined && stats.validation_loss !== null) {
           valLossHistory.value.push({
             step: stats.current_step,
             loss: stats.validation_loss
           })
-        }
-        
-        // Log training progress periodically (every 10 steps)
-        if (stats.current_step % 10 === 0 || stats.current_step === 1) {
-          const progress = ((stats.current_step / totalSteps.value) * 100).toFixed(1)
-          const speed = stats.tokens_per_second ? `${stats.tokens_per_second.toFixed(0)} tok/s` : ''
-          const mem = stats.peak_memory_mb ? `${(stats.peak_memory_mb/1024).toFixed(1)}GB` : ''
+          // Emit a clear narrative log for validation events
           addLog(
-            `Step ${stats.current_step}/${totalSteps.value} (${progress}%) | ` +
-            `Loss: ${stats.current_loss.toFixed(4)} | ` +
-            `Best: ${stats.best_loss?.toFixed(4) || 'N/A'} @ Step ${stats.best_step || 0} | ` +
-            `${speed} ${mem}`, 
+            `Validation at step ${stats.current_step}: loss=${stats.validation_loss.toFixed(4)}`,
             'info'
           )
         }
